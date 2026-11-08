@@ -1,0 +1,2944 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>CINAI Studio — Nền Tảng Đồng Sáng Tạo & Sản Xuất Phim AI</title>
+  <script src="https://www.gstatic.com/antigravity/web/dev/tailwindcss.min.js"></script>
+  <script>
+
+// ═══════════════════════════════════════════════════════
+//  API INTEGRATION LAYER — added automatically
+// ═══════════════════════════════════════════════════════
+const appLocation = window.location.hostname
+  ? window.location
+  : window.parent.location;
+const isLocalDevelopmentHost = ['localhost', '127.0.0.1'].includes(appLocation.hostname);
+const API_BASE = isLocalDevelopmentHost && appLocation.port !== '8000'
+  ? `${appLocation.protocol}//${appLocation.hostname}:8000/api`
+  : '/api';
+let currentProjectId = Number(sessionStorage.getItem('cinai_project_id')) || null;
+let currentEpisodeNumber = Number(sessionStorage.getItem('cinai_episode_number')) || 1;
+let currentSeasonNumber = Number(sessionStorage.getItem('cinai_season_number')) || 1;
+let _pendingProjectAction = null;
+let _generatedConcepts = [];
+let _failedRenderId = null;
+
+async function apiRequest(path, options = {}, allowAnonymous = false) {
+  const headers = { ...(options.headers || {}) };
+  if (options.body && !headers['Content-Type']) headers['Content-Type'] = 'application/json';
+  let response;
+  try {
+    response = await fetch(API_BASE + path, {
+      ...options,
+      headers,
+      credentials: 'include'
+    });
+  } catch {
+    if (window.location.protocol === 'file:') {
+      throw new Error('CINAI đang được mở trực tiếp từ tệp. Hãy khởi động backend rồi truy cập http://127.0.0.1:8000/ để đăng nhập và sử dụng Studio.');
+    }
+    throw new Error('Không thể kết nối máy chủ CINAI. Hãy kiểm tra backend và địa chỉ API rồi thử lại.');
+  }
+  const payload = response.status === 204 ? null : await response.json().catch(() => null);
+  if (!response.ok) {
+    const message = Array.isArray(payload?.detail)
+      ? payload.detail.map(item => `${item.loc?.at(-1) || 'Trường dữ liệu'}: ${item.msg}`).join(' · ')
+      : payload?.detail || `Yêu cầu thất bại (HTTP ${response.status}).`;
+    if (response.status === 401 && !allowAnonymous) {
+      showAuthDialog();
+    }
+    throw new Error(message);
+  }
+  return payload;
+}
+
+async function apiGet(path) {
+  return apiRequest(path);
+}
+
+async function apiPost(path, body, allowAnonymous = false) {
+  return apiRequest(path, {
+    method: 'POST',
+    body: JSON.stringify(body)
+  }, allowAnonymous);
+}
+
+async function apiPut(path, body) {
+  return apiRequest(path, {
+    method: 'PUT',
+    body: JSON.stringify(body)
+  });
+}
+
+async function apiUpload(path, file) {
+  const formData = new FormData();
+  formData.append('file', file);
+  let response;
+  try {
+    response = await fetch(API_BASE + path, {
+      method: 'POST',
+      body: formData,
+      credentials: 'include'
+    });
+  } catch {
+    if (window.location.protocol === 'file:') {
+      throw new Error('CINAI đang được mở trực tiếp từ tệp. Hãy khởi động backend rồi truy cập http://127.0.0.1:8000/ để tải tư liệu.');
+    }
+    throw new Error('Không thể kết nối máy chủ CINAI. Hãy kiểm tra backend rồi thử lại.');
+  }
+  const payload = await response.json().catch(() => null);
+  if (!response.ok) {
+    throw new Error(payload?.detail || `Yêu cầu thất bại (HTTP ${response.status}).`);
+  }
+  return payload;
+}
+
+function showToast(message, isError = false) {
+  let toast = document.getElementById('cinai-toast');
+  if (!toast) {
+    toast = document.createElement('div');
+    toast.id = 'cinai-toast';
+    toast.setAttribute('role', 'status');
+    toast.style.cssText = 'position:fixed;right:20px;bottom:20px;z-index:10001;padding:14px 18px;border-radius:12px;background:#17172a;color:#f0f0ff;border:1px solid rgba(255,255,255,.15);max-width:420px;box-shadow:0 12px 40px #0008;';
+    document.body.appendChild(toast);
+  }
+  toast.textContent = message;
+  toast.style.borderColor = isError ? '#fb7185' : '#4ade80';
+  toast.hidden = false;
+  window.clearTimeout(toast._timeout);
+  toast._timeout = window.setTimeout(() => { toast.hidden = true; }, 5000);
+}
+
+function showAuthDialog() {
+  if (document.getElementById('cinai-auth-overlay')) return;
+  const overlay = document.createElement('div');
+  overlay.id = 'cinai-auth-overlay';
+  overlay.style.cssText = 'position:fixed;inset:0;z-index:10000;background:#06060fee;display:grid;place-items:center;padding:20px;';
+  document.body.appendChild(overlay);
+  let mode = 'login';
+  let pendingContact = '';
+  let pendingChannel = 'email';
+  let pendingName = '';
+  let pendingPassword = '';
+  const fieldStyle = 'display:block;width:100%;box-sizing:border-box;margin:6px 0 14px;padding:11px;border-radius:9px;border:1px solid #44445c;background:#090914;color:#fff;';
+  const buttonStyle = 'width:100%;margin-top:10px;padding:9px;background:transparent;border:0;color:#c4b5fd;cursor:pointer;';
+
+  function loadGoogleIdentityServices() {
+    if (window.google?.accounts?.id) return Promise.resolve();
+    if (window._cinaiGoogleScriptPromise) return window._cinaiGoogleScriptPromise;
+    window._cinaiGoogleScriptPromise = new Promise((resolve, reject) => {
+      const script = document.createElement('script');
+      script.src = 'https://accounts.google.com/gsi/client';
+      script.async = true;
+      script.defer = true;
+      script.onload = resolve;
+      script.onerror = () => reject(new Error('Không tải được dịch vụ đăng nhập Google.'));
+      document.head.appendChild(script);
+    });
+    return window._cinaiGoogleScriptPromise;
+  }
+
+  async function setupGoogleButton(container) {
+    const status = container.querySelector('[data-google-status]');
+    try {
+      const config = await apiGet('/auth/google/config');
+      if (!config.configured || !config.client_id) {
+        status.textContent = 'Đăng nhập Google chưa được cấu hình.';
+        return;
+      }
+      await loadGoogleIdentityServices();
+      if (!container.isConnected) return;
+      window.google.accounts.id.initialize({
+        client_id: config.client_id,
+        callback: async ({ credential }) => {
+          try {
+            await apiPost('/auth/google', { credential }, true);
+            overlay.remove();
+            await initializeWorkspace();
+          } catch (requestError) {
+            const error = overlay.querySelector('#cinai-auth-error');
+            if (error) error.textContent = requestError.message;
+          }
+        }
+      });
+      window.google.accounts.id.renderButton(container.querySelector('[data-google-button]'), {
+        type: 'standard',
+        theme: 'filled_white',
+        size: 'large',
+        text: 'continue_with',
+        shape: 'rectangular',
+        width: Math.min(364, Math.floor(container.clientWidth))
+      });
+      status.textContent = '';
+    } catch (error) {
+      status.textContent = error.message;
+    }
+  }
+
+  function render(message = '') {
+    const login = mode === 'login';
+    const registering = mode === 'register';
+    const verifyRegistration = mode === 'register-verify';
+    const forgot = mode === 'forgot';
+    const verifyReset = mode === 'forgot-verify';
+    const enteringContact = registering || forgot;
+    const enteringCode = verifyRegistration || verifyReset;
+    const title = login ? 'Đăng nhập CINAI'
+      : registering ? 'Tạo tài khoản'
+      : verifyRegistration ? 'Xác minh tài khoản'
+      : forgot ? 'Khôi phục mật khẩu' : 'Đặt mật khẩu mới';
+    const description = login ? 'Đăng nhập để truy cập và lưu dự án của bạn.'
+      : registering ? 'Đăng ký bằng email hoặc số điện thoại. CINAI sẽ gửi mã OTP để xác minh.'
+      : verifyRegistration ? `Nhập mã 6 số đã gửi đến ${escapeHtml(pendingContact)}.`
+      : forgot ? 'Nhập email hoặc số điện thoại đã đăng ký để nhận mã khôi phục.'
+      : `Nhập mã OTP đã gửi đến ${escapeHtml(pendingContact)} và tạo mật khẩu mới.`;
+    const contactFields = enteringContact ? `
+      ${registering ? `<label style="display:block;font-size:.85rem;">Họ và tên
+        <input name="full_name" autocomplete="name" required maxlength="120" style="${fieldStyle}">
+      </label>` : ''}
+      <label style="display:block;font-size:.85rem;">Hình thức xác minh
+        <select name="channel" required style="${fieldStyle}">
+          <option value="email" ${pendingChannel === 'email' ? 'selected' : ''}>Email</option>
+          <option value="phone" ${pendingChannel === 'phone' ? 'selected' : ''}>Số điện thoại</option>
+        </select>
+      </label>
+      <label style="display:block;font-size:.85rem;">${pendingChannel === 'phone' ? 'Số điện thoại' : 'Email'}
+        <input name="contact" type="text" autocomplete="${pendingChannel === 'phone' ? 'tel' : 'email'}" placeholder="${pendingChannel === 'phone' ? '+84901234567' : 'ban@example.com'}" required maxlength="254" style="${fieldStyle}">
+      </label>
+      ${registering ? `<label style="display:block;font-size:.85rem;">Mật khẩu (ít nhất 10 ký tự)
+        <input name="password" type="password" autocomplete="new-password" required minlength="10" maxlength="128" style="${fieldStyle}">
+      </label>` : ''}` : '';
+    const codeFields = enteringCode ? `
+      <label style="display:block;font-size:.85rem;">Mã OTP
+        <input name="otp" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" minlength="6" maxlength="6" required style="${fieldStyle}">
+      </label>
+      ${verifyReset ? `<label style="display:block;font-size:.85rem;">Mật khẩu mới (ít nhất 10 ký tự)
+        <input name="new_password" type="password" autocomplete="new-password" required minlength="10" maxlength="128" style="${fieldStyle}">
+      </label>` : ''}` : '';
+    const loginFields = login ? `
+      <label style="display:block;font-size:.85rem;">Email hoặc số điện thoại
+        <input name="identifier" type="text" autocomplete="username" required maxlength="254" style="${fieldStyle}">
+      </label>
+      <label style="display:block;font-size:.85rem;">Mật khẩu
+        <input name="password" type="password" autocomplete="current-password" required maxlength="128" style="${fieldStyle}">
+      </label>` : '';
+    const submitLabel = login ? 'Đăng nhập'
+      : registering ? 'Gửi mã xác minh'
+      : verifyRegistration ? 'Xác minh và tạo tài khoản'
+      : forgot ? 'Gửi mã khôi phục' : 'Đặt lại mật khẩu';
+    const links = login
+      ? `<button type="button" data-mode="forgot" style="${buttonStyle}">Quên mật khẩu?</button>
+         <button type="button" data-mode="register" style="${buttonStyle}">Chưa có tài khoản? Đăng ký</button>`
+      : registering
+        ? `<button type="button" data-mode="login" style="${buttonStyle}">Đã có tài khoản? Đăng nhập</button>`
+        : enteringCode
+          ? `<button type="button" data-resend="true" style="${buttonStyle}">Gửi lại mã OTP</button>
+             <button type="button" data-mode="${verifyRegistration ? 'register' : 'forgot'}" style="${buttonStyle}">Đổi email/số điện thoại</button>`
+          : `<button type="button" data-mode="login" style="${buttonStyle}">Quay lại đăng nhập</button>`;
+    const socialLogin = login || registering;
+    overlay.innerHTML = `
+      <form id="cinai-auth-form" style="position:relative;width:min(100%,420px);max-height:90vh;overflow:auto;background:#111124;border:1px solid rgba(255,255,255,.14);border-radius:20px;padding:28px;color:#f0f0ff;">
+        <button type="button" data-close-auth aria-label="Đóng đăng nhập" title="Đóng" style="position:absolute;top:14px;right:14px;width:34px;height:34px;border:0;border-radius:8px;background:transparent;color:#a1a1bd;font-size:1.5rem;line-height:1;cursor:pointer;">×</button>
+        <h2 style="margin:0 38px 6px 0;font-size:1.5rem;">${title}</h2>
+        <p style="color:#a1a1bd;margin:0 0 20px;">${description}</p>
+        ${socialLogin ? `
+          <div data-google-container style="display:grid;justify-items:center;gap:6px;margin-bottom:16px;">
+            <div data-google-button></div>
+            <span data-google-status role="status" style="min-height:16px;color:#a1a1bd;font-size:.75rem;text-align:center;"></span>
+          </div>
+          <div style="display:flex;align-items:center;gap:12px;margin:12px 0;color:#77778f;font-size:.8rem;">
+            <span style="height:1px;flex:1;background:rgba(255,255,255,.1);"></span>Hoặc
+            <span style="height:1px;flex:1;background:rgba(255,255,255,.1);"></span>
+          </div>` : ''}
+        ${loginFields}${contactFields}${codeFields}
+        <p id="cinai-auth-error" role="alert" style="min-height:20px;color:#fb7185;font-size:.85rem;"></p>
+        <button id="cinai-auth-submit" type="submit" class="btn btn-primary" style="width:100%;padding:12px;">${submitLabel}</button>
+        ${links}
+      </form>`;
+    overlay.querySelector('#cinai-auth-error').textContent = message;
+    overlay.querySelector('[data-close-auth]').addEventListener('click', () => overlay.remove());
+    if (socialLogin) setupGoogleButton(overlay.querySelector('[data-google-container]'));
+    overlay.querySelectorAll('[data-mode]').forEach(button => {
+      button.addEventListener('click', () => {
+        mode = button.dataset.mode;
+        render();
+      });
+    });
+    overlay.querySelector('select[name="channel"]')?.addEventListener('change', event => {
+      pendingChannel = event.target.value;
+      render();
+    });
+    overlay.querySelector('[data-resend]')?.addEventListener('click', async () => {
+      try {
+        const purpose = verifyRegistration ? 'register' : 'password_reset';
+        const result = await apiPost('/auth/otp/request', {
+          channel: pendingChannel, contact: pendingContact, purpose
+        }, true);
+        render(result.message);
+      } catch (requestError) {
+        render(requestError.message);
+      }
+    });
+    overlay.querySelector('input')?.focus();
+    overlay.onkeydown = event => {
+      if (event.key === 'Escape') overlay.remove();
+    };
+    overlay.querySelector('#cinai-auth-form').addEventListener('submit', async event => {
+      event.preventDefault();
+      const formData = new FormData(event.currentTarget);
+      const values = Object.fromEntries(formData.entries());
+      const error = overlay.querySelector('#cinai-auth-error');
+      try {
+        if (login) {
+          await apiPost('/auth/login', {
+            identifier: String(values.identifier).trim(),
+            password: values.password
+          }, true);
+          overlay.remove();
+          await initializeWorkspace();
+          return;
+        }
+        if (enteringContact) {
+          pendingChannel = values.channel;
+          pendingContact = String(values.contact).trim();
+          if (registering) {
+            pendingName = String(values.full_name).trim();
+            pendingPassword = values.password;
+          }
+          const result = await apiPost('/auth/otp/request', {
+            channel: pendingChannel,
+            contact: pendingContact,
+            purpose: registering ? 'register' : 'password_reset'
+          }, true);
+          mode = registering ? 'register-verify' : 'forgot-verify';
+          render(result.message);
+          return;
+        }
+        if (verifyRegistration) {
+          await apiPost('/auth/register/verify', {
+            channel: pendingChannel,
+            contact: pendingContact,
+            otp: values.otp,
+            password: pendingPassword,
+            full_name: pendingName
+          }, true);
+          overlay.remove();
+          await initializeWorkspace();
+          return;
+        }
+        const result = await apiPost('/auth/password/reset', {
+          channel: pendingChannel,
+          contact: pendingContact,
+          otp: values.otp,
+          new_password: values.new_password
+        }, true);
+        mode = 'login';
+        render(result.message);
+      } catch (requestError) {
+        error.textContent = requestError.message;
+      }
+    });
+  }
+
+  render();
+}
+
+async function initializeWorkspace() {
+  try {
+    const user = await apiGet('/auth/me');
+    const name = document.getElementById('current-user-name');
+    const avatar = document.getElementById('current-user-avatar');
+    const userStatus = document.getElementById('current-user-status');
+    const displayName = user.full_name || user.email || user.phone || 'Người dùng';
+    if (name) name.textContent = displayName;
+    if (avatar) avatar.textContent = displayName.slice(0, 2).toUpperCase();
+    if (userStatus) userStatus.textContent = 'Tài khoản đã xác thực';
+    const projects = await apiGet('/projects/');
+    if (!projects.length) {
+      const created = await apiPost('/projects/', { title: 'Dự án đầu tiên' });
+      currentProjectId = created.id;
+    } else {
+      const stored = projects.find(project => project.id === currentProjectId);
+      currentProjectId = (stored || projects[0]).id;
+    }
+    sessionStorage.setItem('cinai_project_id', currentProjectId);
+    addLogoutButton();
+    await loadScreenData('dashboard');
+    const pendingAction = _pendingProjectAction;
+    _pendingProjectAction = null;
+    if (pendingAction) await pendingAction();
+  } catch (error) {
+    showToast(error.message, true);
+  }
+}
+
+function requireSelectedProject(action) {
+  if (currentProjectId) return true;
+  const userStatus = document.getElementById('current-user-status')?.textContent || '';
+  if (/chưa đăng nhập/i.test(userStatus)) {
+    _pendingProjectAction = action;
+    showAuthDialog();
+    showToast('Hãy đăng nhập hoặc đăng ký trước. CINAI sẽ tự tạo và chọn dự án cho bạn.', true);
+    return false;
+  }
+  showToast('Chưa có dự án được chọn. Hãy đăng nhập lại để tải dự án của bạn.', true);
+  return false;
+}
+
+function addLogoutButton() {
+  const topbar = document.querySelector('.studio-topbar');
+  if (!topbar || document.getElementById('cinai-logout-button')) return;
+  const button = document.createElement('button');
+  button.id = 'cinai-logout-button';
+  button.type = 'button';
+  button.textContent = 'Đăng xuất';
+  button.className = 'btn btn-ghost';
+  button.style.cssText = 'margin-left:auto;padding:7px 12px;font-size:.8rem;';
+  button.addEventListener('click', async () => {
+    try {
+      await apiPost('/auth/logout', {});
+    } catch (error) {
+      showToast(`Không thể đăng xuất khỏi máy chủ: ${error.message}`, true);
+      return;
+    }
+    sessionStorage.removeItem('cinai_project_id');
+    currentProjectId = null;
+    if (_assetPollingTimer) window.clearInterval(_assetPollingTimer);
+    _assetPollingTimer = null;
+    _generatedConcepts = [];
+    button.remove();
+    showAuthDialog();
+  });
+  topbar.appendChild(button);
+}
+
+// ── Status pill ──────────────────────────────────────────────────────────────
+function apiStatusPill(isLive) {
+  return isLive
+    ? `<span style="font-size:0.72rem;padding:2px 8px;border-radius:99px;background:rgba(74,222,128,0.15);color:#4ade80;border:1px solid rgba(74,222,128,0.3);margin-left:10px;">🟢 Đã kết nối</span>`
+    : `<span style="font-size:0.72rem;padding:2px 8px;border-radius:99px;background:rgba(250,204,21,0.15);color:#facc15;border:1px solid rgba(250,204,21,0.3);margin-left:10px;">🟡 Chưa kết nối</span>`;
+}
+
+// ── Status-badge helper ──────────────────────────────────────────────────────
+function statusBadge(status) {
+  const map = {
+    approved: ['badge-approved', 'Đã duyệt'],
+    review: ['badge-review', 'Chờ duyệt'],
+    generating: ['badge-generating', 'Đang tạo'],
+    draft: ['badge-draft', 'Bản nháp'],
+    failed: ['badge-failed', 'Thất bại'],
+    in_progress: ['badge-generating', 'Đang thực hiện'],
+    ready: ['badge-approved', 'Sẵn sàng'],
+    published: ['badge-approved', 'Đã xuất bản']
+  };
+  const [cls, label] = map[(status || '').toLowerCase()] || ['badge-draft', status || 'Bản nháp'];
+  return `<span class="status-badge ${cls}">${escapeHtml(label)}</span>`;
+}
+
+// ═══════════════════════════════════════════════════════
+//  ROUTER
+// ═══════════════════════════════════════════════════════
+async function loadScreenData(tabId) {
+  try {
+    if (!currentProjectId && tabId !== 'dashboard') await initializeWorkspace();
+    switch(tabId) {
+      case 'dashboard':        await loadDashboard();   break;
+      case 'character-studio': await loadCharacters();  break;
+      case 'world-builder':    await loadWorld();       break;
+      case 'scene-editor':     await loadScenes();      break;
+      case 'asset-library':    await loadAssets();      break;
+      case 'analytics':        await loadAnalytics();   break;
+      case 'story-workspace':  await loadStory();       break;
+      case 'video-preview':    await loadMediaCapabilities(); break;
+      case 'idea-builder':
+        if (!_generatedConcepts.length) {
+          const concepts = document.getElementById('builder-concepts-container');
+          if (concepts) concepts.innerHTML = '<div class="empty-state">Chưa có gợi ý. Nhập ý tưởng, chọn Gemini hoặc Grok rồi tạo gợi ý.</div>';
+        }
+        break;
+    }
+  } catch (error) {
+    showToast(error.message, true);
+  }
+}
+
+// ═══════════════════════════════════════════════════════
+//  DASHBOARD
+// ═══════════════════════════════════════════════════════
+async function loadDashboard() {
+  const data = await apiGet(`/dashboard?project_id=${currentProjectId || ''}`);
+  const statsData = await apiGet('/users/stats/overview');
+  const live = !!(data || statsData);
+
+  // Inject status pill into dashboard heading
+  const h1 = document.querySelector('#view-dashboard h1');
+  if (h1) {
+    const existing = h1.querySelector('.api-status-pill');
+    if (existing) existing.remove();
+    const pill = document.createElement('span');
+    pill.className = 'api-status-pill';
+    pill.innerHTML = apiStatusPill(live);
+    h1.appendChild(pill);
+  }
+
+  if (statsData) {
+    const kpiGrid = document.getElementById('dashboard-kpi-grid');
+    if (kpiGrid) {
+      const cards = [
+        ['Dự án', statsData.total_projects, 'Tổng dự án đã tạo', ''],
+        ['Phân cảnh', statsData.total_scenes, 'Tổng số cảnh đã lưu', 'gt-main'],
+        ['Tư liệu', statsData.total_assets, 'Ảnh và âm thanh đã lưu', 'gt-cool'],
+        ['Lượt xem đã ghi nhận', statsData.total_views, 'Số liệu do bạn nhập', 'gt-gold']
+      ];
+      kpiGrid.innerHTML = cards.map(([label, value, detail, color]) => `
+        <div class="glass" style="padding:20px;border-radius:16px;">
+          <div style="font-size:.75rem;color:var(--muted);font-weight:700;">${label}</div>
+          <div style="font-size:2.2rem;font-weight:900;margin-top:6px;" class="${color}">${Number(value || 0).toLocaleString()}</div>
+          <div style="font-size:.78rem;color:var(--muted);margin-top:4px;">${detail}</div>
+        </div>`).join('');
+    }
+  }
+
+  const project = data && data.project;
+  const pipeline = data && data.pipeline ? data.pipeline : {};
+  if (project) {
+    const titleEl = document.getElementById('current-project-title');
+    if (titleEl) titleEl.textContent = project.title || 'Dự án chưa đặt tên';
+    const label = document.getElementById('pipeline-project-label');
+    if (label) label.textContent = project.title || 'Dự án đang chọn';
+    const pipelineGrid = document.getElementById('pipeline-status-grid');
+    if (pipelineGrid) {
+      const steps = [
+        ['Ý tưởng', !!pipeline.ideas, 'Lưu ý tưởng'],
+        ['Kịch bản', !!pipeline.story_bible, 'Tạo hồ sơ câu chuyện'],
+        ['Phân cảnh', !!pipeline.script, `${pipeline.scene_count || 0} cảnh`],
+        ['Ảnh và giọng đọc', Number(pipeline.approved_assets || 0) > 0, `${pipeline.approved_assets || 0} tư liệu đã duyệt`],
+        ['Video', !!pipeline.ready_video, pipeline.ready_video ? 'Video sẵn sàng' : 'Chưa xuất video']
+      ];
+      pipelineGrid.innerHTML = steps.map(([title, complete, detail], index) => `
+        <div class="guide-step" style="border-color:${complete ? 'rgba(34,197,94,.35)' : 'var(--border)'};">
+          <div style="font-size:1.1rem;margin-bottom:4px;">${['💡','📝','🎬','🎙️','🎞️'][index]}</div>
+          <div style="font-size:.82rem;font-weight:700;">${escapeHtml(title)}</div>
+          <div style="font-size:.74rem;color:${complete ? '#4ade80' : 'var(--muted)'};margin-top:4px;">${escapeHtml(detail)}</div>
+        </div>`).join('');
+    }
+
+    const guideStages = [
+      { done: !!pipeline.ideas, title: 'Bước 1: Phát triển ý tưởng', description: 'Mô tả câu chuyện để AI gợi ý hướng phát triển.', tab: 'idea-builder', button: 'Tạo ý tưởng →' },
+      { done: !!pipeline.story_bible, title: 'Bước 2: Hoàn thiện kịch bản', description: 'Biến ý tưởng thành cốt truyện và hồ sơ nhân vật.', tab: 'story-workspace', button: 'Mở kịch bản →' },
+      { done: !!pipeline.script, title: 'Bước 3: Chia câu chuyện thành phân cảnh', description: 'Rà soát từng cảnh trước khi tạo tư liệu.', tab: 'scene-editor', button: 'Mở phân cảnh →' },
+      { done: Number(pipeline.approved_assets || 0) > 0, title: 'Bước 4: Chuẩn bị hình ảnh và giọng đọc', description: 'Tạo hoặc thêm tư liệu cho các cảnh.', tab: 'asset-library', button: 'Mở thư viện tư liệu →' },
+      { done: !!pipeline.ready_video, title: 'Bước 5: Xem và xuất video', description: 'Khi đã có tư liệu cần thiết, tạo bản video để xem.', tab: 'video-preview', button: 'Mở phần video →' }
+    ];
+    const next = guideStages.find(stage => !stage.done) || {
+      title: 'Bạn đã hoàn thành các bước chính',
+      description: 'Bạn có thể xem lại video hoặc tiếp tục chỉnh sửa dự án.',
+      tab: 'video-preview',
+      button: 'Xem video →'
+    };
+    const guideTitle = document.getElementById('guide-next-title');
+    const guideDescription = document.getElementById('guide-next-description');
+    const guideAction = document.getElementById('guide-next-action');
+    if (guideTitle) guideTitle.textContent = next.title;
+    if (guideDescription) guideDescription.textContent = next.description;
+    if (guideAction) {
+      guideAction.textContent = next.button;
+      guideAction.onclick = () => switchTab(next.tab);
+    }
+  } else {
+    const pipelineGrid = document.getElementById('pipeline-status-grid');
+    if (pipelineGrid) pipelineGrid.innerHTML = '<div class="empty-state" style="grid-column:1/-1;">Chưa có dự án. Tạo dự án để bắt đầu theo dõi tiến độ.</div>';
+    const guideTitle = document.getElementById('guide-next-title');
+    const guideDescription = document.getElementById('guide-next-description');
+    const guideAction = document.getElementById('guide-next-action');
+    if (guideTitle) guideTitle.textContent = 'Tạo dự án đầu tiên của bạn';
+    if (guideDescription) guideDescription.textContent = 'Đặt tên dự án, sau đó thêm một ý tưởng. Bạn không cần chuẩn bị kịch bản hoàn chỉnh.';
+    if (guideAction) {
+      guideAction.textContent = 'Tạo dự án →';
+      guideAction.onclick = createProject;
+    }
+  }
+
+  // Projects table: try /api/projects/
+  const projects = await apiGet('/projects/');
+  if (projects && Array.isArray(projects)) {
+    const tbody = document.getElementById('dashboard-projects-tbody');
+    if (tbody) {
+      tbody.innerHTML = projects.length ? projects.map(p => `
+        <tr style="border-bottom: 1px solid rgba(255,255,255,0.04);">
+          <td style="padding: 14px; font-weight: 700; color: #f0f0ff;">
+            <div style="display:flex;align-items:center;gap:10px;">
+              <div style="width:32px;height:32px;border-radius:8px;background:linear-gradient(135deg,#5b52f0,#8b5cf6);display:flex;align-items:center;justify-content:center;font-size:0.9rem;">🎬</div>
+              <div>${escapeHtml(p.title)}<div style="font-size:0.75rem;color:var(--muted);font-weight:400;">${escapeHtml(p.genre || '')}</div></div>
+            </div>
+          </td>
+          <td style="padding: 14px; color: #c4b5fd;">${escapeHtml(p.genre || '—')}</td>
+          <td style="padding: 14px; color: var(--muted);">${p.scene_count ?? 0} cảnh · ${p.asset_count ?? 0} tư liệu</td>
+          <td style="padding: 14px;">${statusBadge(p.status)}</td>
+          <td style="padding: 14px; text-align: right;">
+            <button onclick="selectProject(${Number(p.id)})" class="btn btn-ghost" style="padding: 6px 14px; font-size: 0.8rem;">Chọn dự án →</button>
+          </td>
+        </tr>
+      `).join('') : '<tr><td colspan="5" class="empty-state">Bạn chưa có dự án nào. Chọn “Tạo dự án” để bắt đầu.</td></tr>';
+    }
+  }
+}
+
+// ═══════════════════════════════════════════════════════
+//  CHARACTER STUDIO
+// ═══════════════════════════════════════════════════════
+
+async function deleteCharacter(charId, charName) {
+  if (!confirm(`Bạn có chắc chắn muốn xóa nhân vật "${charName}" không?`)) return;
+  try {
+    const res = await fetch(`${API_BASE}/projects/${currentProjectId}/characters/${charId}`, {
+      method: 'DELETE',
+      credentials: 'include'
+    });
+    if (!res.ok) throw new Error('Không thể xóa nhân vật');
+    showToast(`Đã xóa nhân vật "${charName}" thành công!`);
+    await loadCharacters();
+  } catch (err) {
+    showToast(err.message, true);
+  }
+}
+
+async function showAddSceneDialog() {
+  if (!currentProjectId) return showToast('Hãy chọn hoặc tạo dự án trước khi thêm phân cảnh.', true);
+  const number = prompt('Nhập số thứ tự phân cảnh (VD: 7):', '7');
+  if (!number) return;
+  const title = prompt('Nhập tiêu đề phân cảnh:', 'Cuộc đột kích bất ngờ');
+  if (!title) return;
+  const promptText = prompt('Nhập Visual Prompt (FLUX/SDXL):', 'Cyberpunk neon canal night, dramatic lighting, 8k');
+  const dialogue = prompt('Nhập lời thoại / thuyết minh:', 'Kha: Đã đến lúc kết thúc chuyện này.');
+  const angle = prompt('Nhập góc quay (VD: Wide Establishing, Medium Close-Up):', 'Medium Close-Up');
+  const sfx = prompt('Nhập hiệu ứng âm thanh (SFX):', 'Tiếng động cơ xe bay, tiếng còi hú');
+  
+  try {
+    await apiPost(`/projects/${currentProjectId}/scenes`, {
+      scene_number: parseInt(number) || 1,
+      title: title.trim(),
+      visual_prompt: promptText || '',
+      dialogue: dialogue || '',
+      camera_angle: angle || 'medium_shot',
+      sfx: sfx || '',
+      duration: 5.0,
+      episode_number: currentEpisodeNumber
+    });
+    showToast(`Đã thêm Phân cảnh ${number} thành công!`);
+    await loadScenes();
+  } catch (err) {
+    showToast(err.message, true);
+  }
+}
+
+async function deleteScene(sceneId, sceneTitle) {
+  if (!confirm(`Bạn có chắc chắn muốn xóa phân cảnh "${sceneTitle}" không?`)) return;
+  try {
+    const res = await fetch(`${API_BASE}/projects/${currentProjectId}/scenes/${sceneId}`, {
+      method: 'DELETE',
+      credentials: 'include'
+    });
+    if (!res.ok) throw new Error('Không thể xóa phân cảnh');
+    showToast(`Đã xóa phân cảnh "${sceneTitle}" thành công!`);
+    await loadScenes();
+  } catch (err) {
+    showToast(err.message, true);
+  }
+}
+
+async function showAddWorldItemDialog(type) {
+  const label = type === 'rule' ? 'Luật lệ / Cơ chế thế giới' : (type === 'faction' ? 'Phe phái' : 'Địa điểm');
+  const name = prompt(`Nhập tên ${label} mới:`);
+  if (!name || !name.trim()) return;
+  const desc = prompt(`Nhập mô tả chi tiết cho ${label}:`, 'Mô tả bối cảnh khoa học viễn tưởng');
+  
+  try {
+    const world = await apiGet(`/projects/${currentProjectId}/worlds`);
+    let rules = (world && Array.isArray(world.rules)) ? [...world.rules] : [];
+    let factions = (world && Array.isArray(world.factions)) ? [...world.factions] : [];
+    let locations = (world && Array.isArray(world.locations)) ? [...world.locations] : [];
+    
+    if (type === 'rule') rules.push({ name: name.trim(), description: desc || '' });
+    else if (type === 'faction') factions.push({ name: name.trim(), description: desc || '' });
+    else locations.push({ name: name.trim(), description: desc || '' });
+    
+    await apiPost(`/projects/${currentProjectId}/worlds`, {
+      name: world?.name || 'Sài Gòn Neo-2088',
+      setting_description: world?.setting_description || '',
+      rules: JSON.stringify(rules),
+      factions: JSON.stringify(factions),
+      locations: JSON.stringify(locations)
+    });
+    showToast(`Đã cập nhật ${label} vào World Memory!`);
+    await loadWorld();
+  } catch (err) {
+    showToast(err.message, true);
+  }
+}
+
+async function loadCharacters() {
+  const grid = document.getElementById('character-cards-grid');
+  if (!currentProjectId) {
+    if (grid) grid.innerHTML = '<p style="color:var(--muted);">Chọn hoặc tạo dự án để xem nhân vật.</p>';
+    return;
+  }
+  const chars = await apiGet(`/projects/${currentProjectId}/characters`);
+  const live = !!chars;
+
+  const h1 = document.querySelector('#view-character-studio h1');
+  if (h1) {
+    const existing = h1.querySelector('.api-status-pill');
+    if (existing) existing.remove();
+    const pill = document.createElement('span');
+    pill.className = 'api-status-pill';
+    pill.innerHTML = apiStatusPill(live);
+    h1.appendChild(pill);
+  }
+
+  if (!grid) return;
+  if (!chars.length) {
+    grid.innerHTML = '<p style="color:var(--muted);">Dự án chưa có nhân vật. Tạo Story Bible để lưu hồ sơ nhân vật.</p>';
+    return;
+  }
+
+  const borderColors = ['#5b52f0','#22d3ee','#fb7185','#4ade80','#f59e0b'];
+  grid.innerHTML = chars.map((c, i) => {
+    const bc = borderColors[i % borderColors.length];
+    return `
+      <div class="glass" style="padding: 24px; border-radius: 18px; border-top: 3px solid ${bc};">
+        <div style="display: flex; gap: 18px; align-items: flex-start; margin-bottom: 18px;">
+          <div style="width: 80px; height: 80px; border-radius: 16px; background: linear-gradient(135deg, #1e1b4b, #312e81); border: 2px solid rgba(139,92,246,0.4); display: flex; align-items: center; justify-content: center; font-size: 2.2rem; flex-shrink: 0;">👤</div>
+          <div style="flex: 1;">
+            <div style="display: flex; justify-content: space-between; align-items: center;">
+              <h3 style="font-size: 1.25rem; font-weight: 800; color: #f0f0ff;">${escapeHtml(c.name)}</h3>
+              ${statusBadge(c.status || c.role)}
+            </div>
+            <div style="font-size: 0.8rem; color: #a78bfa; margin-top: 2px;">${escapeHtml(c.role || '')}</div>
+            <div style="font-size: 0.85rem; color: var(--muted); margin-top: 8px; line-height: 1.6;">${escapeHtml(c.visual_prompt || '')}</div>
+          </div>
+        </div>
+        <div style="background: rgba(0,0,0,0.3); border: 1px solid var(--border); border-radius: 12px; padding: 14px; margin-bottom: 14px;">
+          <div style="font-size: 0.72rem; font-weight: 700; color: var(--gold); text-transform: uppercase; margin-bottom: 4px;">Visual Prompt (FLUX/SDXL)</div>
+          <div style="font-size: 0.8rem; color: #c4b5fd; font-family: monospace; line-height: 1.6;">"${escapeHtml(c.flux_prompt || c.visual_prompt || '—')}"</div>
+        </div>
+        <div style="display: flex; justify-content: space-between; align-items: center; background: rgba(255,255,255,0.03); padding: 12px 16px; border-radius: 10px;">
+          <div>
+            <span style="font-size: 0.75rem; color: var(--muted);">Giọng đọc AI (Edge TTS):</span>
+            <span style="display: block; font-size: 0.85rem; font-weight: 700; color: #4ade80;">${escapeHtml(c.voice_profile || '—')}</span>
+          </div>
+          <div style="display:flex;gap:8px;">
+            <button type="button" disabled title="Chưa có API nghe thử giọng nhân vật độc lập." class="btn btn-ghost" style="padding: 6px 14px; font-size: 0.78rem; color:#8a8ab5;">Nghe thử (chưa hỗ trợ)</button>
+            <button type="button" onclick="deleteCharacter(${Number(c.id)}, '${escapeHtml(c.name)}')" class="btn btn-ghost" style="padding: 6px 12px; font-size: 0.78rem; color:#f87171; border-color:rgba(248,113,113,0.3);" title="Xóa nhân vật">🗑️ Xóa</button>
+          </div>
+        </div>
+      </div>
+    `;
+  }).join('');
+}
+
+// ═══════════════════════════════════════════════════════
+//  WORLD BUILDER
+// ═══════════════════════════════════════════════════════
+async function loadWorld() {
+  if (!currentProjectId) {
+    const titleEl = document.getElementById('world-setting-title');
+    const descEl = document.getElementById('world-setting-desc');
+    const rulesList = document.getElementById('world-rules-list');
+    if (titleEl) titleEl.textContent = 'Chưa có dữ liệu thế giới';
+    if (descEl) descEl.textContent = 'Chọn hoặc tạo dự án để xem bối cảnh.';
+    if (rulesList) rulesList.innerHTML = '';
+    return;
+  }
+  const world = await apiGet(`/projects/${currentProjectId}/worlds`);
+  const live = !!world;
+
+  const h1 = document.querySelector('#view-world-builder h1');
+  if (h1) {
+    const existing = h1.querySelector('.api-status-pill');
+    if (existing) existing.remove();
+    const pill = document.createElement('span');
+    pill.className = 'api-status-pill';
+    pill.innerHTML = apiStatusPill(live);
+    h1.appendChild(pill);
+  }
+
+  if (!world) {
+    const titleEl = document.getElementById('world-setting-title');
+    const descEl = document.getElementById('world-setting-desc');
+    const rulesList = document.getElementById('world-rules-list');
+    if (titleEl) titleEl.textContent = 'Chưa có dữ liệu thế giới';
+    if (descEl) descEl.textContent = 'Tạo Story Bible để lưu bối cảnh, luật lệ và địa điểm.';
+    if (rulesList) rulesList.innerHTML = '';
+    return;
+  }
+
+  const titleEl = document.getElementById('world-setting-title');
+  if (titleEl) titleEl.textContent = `🏙️ Bối Cảnh Chính: ${world.name || 'Chưa đặt tên'}`;
+
+  const descEl = document.getElementById('world-setting-desc');
+  if (descEl) descEl.textContent = world.setting_description || 'Chưa có mô tả bối cảnh.';
+
+  const rulesList = document.getElementById('world-rules-list');
+  if (rulesList) {
+    const items = [];
+    if (world.rules && Array.isArray(world.rules)) {
+      world.rules.forEach((r, i) => {
+        items.push(`
+          <div style="background: rgba(255,255,255,0.03); border: 1px solid var(--border); border-radius: 10px; padding: 12px;">
+            <div style="font-weight: 700; font-size: 0.85rem; color: #f87171;">Luật ${i+1}: ${escapeHtml(r.name || r)}</div>
+            <div style="font-size: 0.8rem; color: var(--muted); margin-top: 2px;">${escapeHtml(r.description || '')}</div>
+          </div>`);
+      });
+    }
+    if (world.factions && Array.isArray(world.factions)) {
+      const fColors = ['#60a5fa','#4ade80','#fb7185','#facc15'];
+      world.factions.forEach((f, i) => {
+        items.push(`
+          <div style="background: rgba(255,255,255,0.03); border: 1px solid var(--border); border-radius: 10px; padding: 12px;">
+            <div style="font-weight: 700; font-size: 0.85rem; color: ${fColors[i%fColors.length]};">Phe Phái ${i+1}: ${escapeHtml(f.name || f)}</div>
+            <div style="font-size: 0.8rem; color: var(--muted); margin-top: 2px;">${escapeHtml(f.description || '')}</div>
+          </div>`);
+      });
+    }
+    if (world.locations && Array.isArray(world.locations)) {
+      world.locations.forEach((l, i) => {
+        items.push(`
+          <div style="background: rgba(255,255,255,0.03); border: 1px solid var(--border); border-radius: 10px; padding: 12px;">
+            <div style="font-weight: 700; font-size: 0.85rem; color: #c4b5fd;">Địa Điểm: ${escapeHtml(l.name || l)}</div>
+            <div style="font-size: 0.8rem; color: var(--muted); margin-top: 2px;">${escapeHtml(l.description || '')}</div>
+          </div>`);
+      });
+    }
+    if (items.length) rulesList.innerHTML = items.join('');
+  }
+}
+
+// ═══════════════════════════════════════════════════════
+//  SCENE EDITOR
+// ═══════════════════════════════════════════════════════
+let _loadedScenes = [];
+
+async function loadScenes() {
+  const list = document.getElementById('scene-cards-list');
+  if (!currentProjectId) {
+    _loadedScenes = [];
+    if (list) list.innerHTML = '<p style="color:var(--muted);">Chọn hoặc tạo dự án để quản lý phân cảnh.</p>';
+    return;
+  }
+  const scenes = await apiGet(
+    `/projects/${currentProjectId}/scenes?episode_number=${currentEpisodeNumber}`
+  );
+  _loadedScenes = scenes;
+  const live = !!(scenes && scenes.length);
+
+  const h1 = document.querySelector('#view-scene-editor h1');
+  if (h1) {
+    const existing = h1.querySelector('.api-status-pill');
+    if (existing) existing.remove();
+    const pill = document.createElement('span');
+    pill.className = 'api-status-pill';
+    pill.innerHTML = apiStatusPill(live);
+    h1.appendChild(pill);
+  }
+
+  if (!list) return;
+  if (!scenes.length) {
+    list.innerHTML = '<p style="color:var(--muted);">Chưa có phân cảnh. Tạo Story Bible, sau đó chọn “Tạo kịch bản”.</p>';
+    return;
+  }
+
+  const bgGradients = [
+    'linear-gradient(135deg, #1e1b4b, #312e81)',
+    'linear-gradient(135deg, #4c1d95, #6d28d9)',
+    'linear-gradient(135deg, #0e7490, #0891b2)',
+    'linear-gradient(135deg, #991b1b, #dc2626)',
+  ];
+  const emojis = ['🌧️','💎','🚨','🛸','🎬','⚡','🌍','🤖'];
+
+  list.innerHTML = scenes.map((s, i) => `
+    <div class="glass" style="padding: 20px 24px; border-radius: 16px;">
+      <div style="display: grid; grid-template-columns: 140px 1fr auto; gap: 20px; align-items: center;">
+        <div style="width: 140px; height: 90px; border-radius: 10px; background: ${bgGradients[i%bgGradients.length]}; border: 1px solid var(--border); display: flex; align-items: center; justify-content: center; font-size: 1.8rem;">${emojis[i%emojis.length]}</div>
+        <div>
+          <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 4px;">
+            <span style="font-weight: 800; font-size: 1rem; color: #f0f0ff;">Cảnh ${String(s.scene_number||i+1).padStart(2,'0')}: ${escapeHtml(s.title || 'Cảnh '+(i+1))}</span>
+            ${statusBadge(s.status)}
+            <span style="font-size: 0.75rem; color: var(--muted);">${Number(s.duration || 0)} giây · ${escapeHtml(s.camera_angle || '')}</span>
+          </div>
+          <div style="font-size: 0.85rem; color: #cbd5e1; margin-bottom: 6px;"><strong>Thoại:</strong> "${escapeHtml(s.dialogue || '—')}"</div>
+          <div style="font-size: 0.78rem; color: #a78bfa; font-family: monospace;">Mô tả hình ảnh: "${escapeHtml(s.visual_prompt || '—')}"</div>
+          ${s.sfx ? `<div style="font-size: 0.78rem; color: #22d3ee; margin-top:4px;">Âm thanh: ${escapeHtml(s.sfx)}</div>` : ''}
+        </div>
+        <div style="display: flex; flex-direction: column; gap: 6px;">
+          <button onclick="showEditSceneDialog(${Number(s.id)})" class="btn btn-ghost" style="padding: 6px 12px; font-size: 0.78rem;">✏️ Sửa phân cảnh</button>
+          <button data-scene-id="${Number(s.id)}" data-dialogue="${escapeHtml(s.dialogue || '')}" onclick="generateSceneSpeech(Number(this.dataset.sceneId), this.dataset.dialogue)" class="btn btn-ghost" style="padding: 6px 12px; font-size: 0.78rem;">Tạo giọng đọc</button>
+          <button data-scene-id="${Number(s.id)}" data-prompt="${escapeHtml(s.visual_prompt || '')}" onclick="generateSceneImage(Number(this.dataset.sceneId), this.dataset.prompt)" class="btn btn-ghost" style="padding: 6px 12px; font-size: 0.78rem;">🖼 Tạo ảnh</button>
+        </div>
+      </div>
+    </div>
+  `).join('');
+}
+
+function showEditSceneDialog(sceneId) {
+  const scene = _loadedScenes.find(item => Number(item.id) === sceneId);
+  if (!scene) return showToast('Không tìm thấy phân cảnh cần sửa. Hãy tải lại danh sách.', true);
+  const overlay = document.createElement('div');
+  overlay.style.cssText = 'position:fixed;inset:0;z-index:10000;background:#06060fee;display:grid;place-items:center;padding:20px;';
+  overlay.innerHTML = `
+    <form role="dialog" aria-modal="true" aria-labelledby="edit-scene-title" style="width:min(640px,100%);max-height:90vh;overflow:auto;padding:24px;border:1px solid var(--border);border-radius:16px;background:#111124;color:var(--text);">
+      <h2 id="edit-scene-title" style="font-size:1.2rem;margin-bottom:18px;">Sửa phân cảnh ${Number(scene.scene_number)}</h2>
+      <div style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;">
+        <label style="font-size:.82rem;color:var(--muted);">Số thứ tự<input name="scene_number" type="number" min="1" max="1000" required style="${sceneFieldStyle}"></label>
+        <label style="font-size:.82rem;color:var(--muted);">Thời lượng (giây)<input name="duration" type="number" min="1" max="300" step="0.1" required style="${sceneFieldStyle}"></label>
+        <label style="grid-column:1/-1;font-size:.82rem;color:var(--muted);">Tiêu đề<input name="title" maxlength="200" required style="${sceneFieldStyle}"></label>
+        <label style="grid-column:1/-1;font-size:.82rem;color:var(--muted);">Mô tả hình ảnh<textarea name="visual_prompt" rows="3" maxlength="2000" style="${sceneFieldStyle}"></textarea></label>
+        <label style="grid-column:1/-1;font-size:.82rem;color:var(--muted);">Lời thoại<textarea name="dialogue" rows="3" maxlength="4000" style="${sceneFieldStyle}"></textarea></label>
+        <label style="font-size:.82rem;color:var(--muted);">Góc máy<input name="camera_angle" maxlength="100" style="${sceneFieldStyle}"></label>
+        <label style="font-size:.82rem;color:var(--muted);">Hiệu ứng âm thanh<input name="sfx" maxlength="500" style="${sceneFieldStyle}"></label>
+      </div>
+      <div style="display:flex;justify-content:flex-end;gap:10px;margin-top:18px;">
+        <button type="button" data-cancel class="btn btn-ghost" style="padding:9px 16px;">Hủy</button>
+        <button type="submit" class="btn btn-primary" style="padding:9px 16px;">Lưu thay đổi</button>
+      </div>
+    </form>`;
+  const form = overlay.querySelector('form');
+  const fields = form.elements;
+  fields.scene_number.value = scene.scene_number ?? 1;
+  fields.duration.value = scene.duration ?? 5;
+  fields.title.value = scene.title || '';
+  fields.visual_prompt.value = scene.visual_prompt || '';
+  fields.dialogue.value = scene.dialogue || '';
+  fields.camera_angle.value = scene.camera_angle || '';
+  fields.sfx.value = typeof scene.sfx === 'string' ? scene.sfx : JSON.stringify(scene.sfx || '');
+  const close = () => overlay.remove();
+  overlay.querySelector('[data-cancel]').addEventListener('click', close);
+  overlay.addEventListener('click', event => {
+    if (event.target === overlay) close();
+  });
+  form.addEventListener('submit', async event => {
+    event.preventDefault();
+    const submit = form.querySelector('button[type="submit"]');
+    submit.disabled = true;
+    try {
+      await apiPut(`/projects/${currentProjectId}/scenes/${sceneId}`, {
+        scene_number: Number(fields.scene_number.value),
+        duration: Number(fields.duration.value),
+        title: fields.title.value.trim(),
+        visual_prompt: fields.visual_prompt.value,
+        dialogue: fields.dialogue.value,
+        camera_angle: fields.camera_angle.value,
+        sfx: fields.sfx.value
+      });
+      close();
+      showToast('Đã cập nhật phân cảnh.');
+      await loadScenes();
+    } catch (error) {
+      showToast(error.message, true);
+      submit.disabled = false;
+    }
+  });
+  document.body.appendChild(overlay);
+  form.querySelector('input[name="title"]').focus();
+}
+
+const sceneFieldStyle = 'display:block;width:100%;box-sizing:border-box;margin-top:6px;padding:10px;border:1px solid var(--border);border-radius:8px;background:#090914;color:#fff;font:inherit;';
+
+// ═══════════════════════════════════════════════════════
+//  ASSET LIBRARY
+// ═══════════════════════════════════════════════════════
+let _allAssets = null;
+let _assetFilter = null;
+let _assetPollingTimer = null;
+
+async function loadAssets(filterType) {
+  if (!currentProjectId) {
+    const grid = document.getElementById('asset-grid');
+    if (grid) grid.innerHTML = '<p style="color:var(--muted);">Chọn hoặc tạo dự án để quản lý tư liệu.</p>';
+    const filterBar = document.getElementById('asset-filter-bar');
+    if (filterBar) filterBar.innerHTML = '';
+    return;
+  }
+  if (!_allAssets) {
+    _allAssets = await apiGet(`/projects/${currentProjectId}/assets`);
+  }
+  const assets = _allAssets;
+  const live = !!(assets && assets.length);
+
+  const h1 = document.querySelector('#view-asset-library h1');
+  if (h1) {
+    const existing = h1.querySelector('.api-status-pill');
+    if (existing) existing.remove();
+    const pill = document.createElement('span');
+    pill.className = 'api-status-pill';
+    pill.innerHTML = apiStatusPill(live);
+    h1.appendChild(pill);
+  }
+
+  if (!assets.length) {
+    const grid = document.getElementById('asset-grid');
+    if (grid) grid.innerHTML = '<p style="color:var(--muted);">Chưa có tài nguyên được tạo.</p>';
+    return;
+  }
+
+  // Rebuild filter bar
+  const types = ['all', ...new Set(assets.map(a => a.asset_type).filter(Boolean))];
+  const filterBar = document.getElementById('asset-filter-bar');
+  if (filterBar) {
+    filterBar.innerHTML = types.map(t => {
+      const count = t === 'all' ? assets.length : assets.filter(a=>a.asset_type===t).length;
+      const label = t === 'all' ? `Tất cả (${count})` : `${t} (${count})`;
+      const active = (filterType||_assetFilter||'all') === t;
+      return `<button onclick="loadAssets('${t}')" class="btn ${active?'btn-primary':'btn-ghost'}" style="padding: 6px 16px; font-size: 0.82rem;">${label}</button>`;
+    }).join('');
+  }
+
+  _assetFilter = filterType || _assetFilter || 'all';
+  const filtered = _assetFilter === 'all' ? assets : assets.filter(a=>a.asset_type===_assetFilter);
+
+  const typeEmoji = {visual:'🖼️', audio:'🎙️', sfx:'🎵', background:'🌆', video:'🎞️'};
+  const typeBg = {
+    visual:'linear-gradient(135deg,#1e1b4b,#312e81)',
+    audio:'linear-gradient(135deg,#064e3b,#047857)',
+    sfx:'linear-gradient(135deg,#1e3a5f,#1d4ed8)',
+    background:'linear-gradient(135deg,#3b0764,#6b21a8)',
+    video:'linear-gradient(135deg,#701a75,#a21caf)',
+  };
+
+  const grid = document.getElementById('asset-grid');
+  if (grid) {
+    grid.innerHTML = filtered.map(a => `
+      <div class="glass" style="border-radius: 14px; overflow: hidden; padding: 16px;">
+        <div style="min-height:84px;border-radius:10px;background:${typeBg[a.asset_type]||'linear-gradient(135deg,#1e293b,#334155)'};display:flex;align-items:center;justify-content:center;font-size:3rem;margin-bottom:12px;overflow:hidden;">
+          ${a.asset_type === 'visual' && a.file_url
+            ? `<a href="${escapeHtml(a.file_url)}" target="_blank" rel="noopener"><img src="${escapeHtml(a.thumbnail_url || a.file_url)}" alt="${escapeHtml(a.name)}" style="height:180px;width:100%;object-fit:contain;border-radius:10px;"></a>`
+            : a.asset_type === 'audio' && a.file_url
+              ? `<audio controls preload="none" src="${escapeHtml(a.file_url)}" style="width:100%;"></audio>`
+              : typeEmoji[a.asset_type] || '📦'}
+        </div>
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
+          <span style="font-weight: 700; font-size: 0.9rem; color: #f0f0ff; white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:60%">${escapeHtml(a.name)}</span>
+          ${statusBadge(a.status)}
+        </div>
+        <div style="font-size: 0.75rem; color: var(--muted);">Loại: ${escapeHtml(a.asset_type || '—')} · ${a.file_size_mb ? `${Number(a.file_size_mb).toFixed(2)} MB` : ''}</div>
+        ${a.error_message ? `<div style="color:#fb7185;font-size:.78rem;margin-top:8px;">${escapeHtml(a.error_message)}</div>` : ''}
+        ${a.status === 'review' ? `<button onclick="approveAsset(${Number(a.id)})" class="btn btn-primary" style="margin-top:10px;padding:7px 12px;font-size:.78rem;">Duyệt tài nguyên</button>` : ''}
+        ${a.status === 'failed' ? `<button onclick="retryAsset(${Number(a.id)})" class="btn btn-ghost" style="margin-top:10px;padding:7px 12px;font-size:.78rem;">Thử tạo lại</button>` : ''}
+      </div>
+    `).join('');
+  }
+  if (assets.some(asset => asset.status === 'generating')) {
+    if (!_assetPollingTimer) {
+      _assetPollingTimer = window.setInterval(async () => {
+        try {
+          _allAssets = await apiGet(`/projects/${currentProjectId}/assets`);
+          await loadAssets(_assetFilter);
+        } catch (error) {
+          window.clearInterval(_assetPollingTimer);
+          _assetPollingTimer = null;
+          showToast(`Không thể cập nhật trạng thái tư liệu: ${error.message}`, true);
+        }
+      }, 4000);
+    }
+  } else if (_assetPollingTimer) {
+    window.clearInterval(_assetPollingTimer);
+    _assetPollingTimer = null;
+  }
+}
+
+// ═══════════════════════════════════════════════════════
+//  ANALYTICS
+// ═══════════════════════════════════════════════════════
+async function loadAnalytics() {
+  if (!currentProjectId) {
+    const kpis = document.getElementById('analytics-kpi-grid');
+    const recommendations = document.getElementById('analytics-recommendation-grid');
+    if (kpis) kpis.innerHTML = '<div class="empty-state" style="grid-column:1/-1;">Chọn hoặc tạo dự án để xem analytics.</div>';
+    if (recommendations) recommendations.innerHTML = '<div class="empty-state" style="grid-column:1/-1;">Chọn dự án và lưu số liệu trước khi yêu cầu gợi ý.</div>';
+    return;
+  }
+  const response = await apiGet(`/projects/${currentProjectId}/analytics`);
+  const data = response && response.data ? response.data : null;
+  const live = !!response;
+  const heading = document.querySelector('#view-analytics > div');
+  if (heading && !document.getElementById('analytics-input-form')) {
+    const form = document.createElement('form');
+    form.id = 'analytics-input-form';
+    form.style.cssText = 'display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:10px;padding:18px;margin:16px 0;border:1px solid var(--border);border-radius:14px;background:rgba(255,255,255,.025);';
+    form.innerHTML = `
+      ${[
+        ['view_count', 'Lượt xem'],
+        ['unique_viewers', 'Người xem duy nhất'],
+        ['watch_time_avg_sec', 'Thời gian xem TB (giây)'],
+        ['retention_rate', 'Giữ chân (%)'],
+        ['like_count', 'Lượt thích'],
+        ['comment_count', 'Bình luận'],
+        ['share_count', 'Chia sẻ']
+      ].map(([name, label]) => `<label style="font-size:.75rem;color:var(--muted);">${label}<input name="${name}" type="number" min="0" step="${name === 'watch_time_avg_sec' || name === 'retention_rate' ? '0.1' : '1'}" value="0" required style="display:block;width:100%;margin-top:5px;padding:8px;border:1px solid var(--border);border-radius:8px;background:#111124;color:#fff;"></label>`).join('')}
+      <button class="btn btn-primary" type="submit" style="align-self:end;padding:9px;">Lưu số liệu</button>`;
+    form.addEventListener('submit', recordAnalytics);
+    heading.insertAdjacentElement('afterend', form);
+    const importForm = document.createElement('form');
+    importForm.id = 'analytics-csv-import-form';
+    importForm.style.cssText = 'display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:0 0 18px;padding:14px 18px;border:1px solid var(--border);border-radius:14px;background:rgba(255,255,255,.025);';
+    importForm.innerHTML = `
+      <label style="flex:1;min-width:220px;color:var(--muted);font-size:.8rem;">
+        Nhập số liệu từ CSV (tối đa 500 dòng, 2 MB)
+        <input type="file" name="csv_file" accept=".csv,text/csv" required style="display:block;margin-top:6px;color:#f0f0ff;">
+      </label>
+      <button class="btn btn-ghost" type="submit" style="padding:9px;">Nhập CSV</button>`;
+    importForm.addEventListener('submit', importAnalyticsCsv);
+    form.insertAdjacentElement('afterend', importForm);
+  }
+  await loadSocialConnections();
+
+  const h1 = document.querySelector('#view-analytics h1');
+  if (h1) {
+    const existing = h1.querySelector('.api-status-pill');
+    if (existing) existing.remove();
+    const pill = document.createElement('span');
+    pill.className = 'api-status-pill';
+    pill.innerHTML = apiStatusPill(live);
+    h1.appendChild(pill);
+  }
+
+  if (!data) return;
+
+  const an = data.latest || {};
+  const kpiGrid = document.getElementById('analytics-kpi-grid');
+  if (!data.latest && kpiGrid) {
+    kpiGrid.innerHTML = '<div class="empty-state" style="grid-column:1/-1;">Chưa có số liệu được lưu. Nhập số liệu thực tế bên dưới để bắt đầu theo dõi.</div>';
+  }
+  if (kpiGrid && data.latest) {
+    kpiGrid.innerHTML = `
+      <div class="glass" style="padding: 22px; border-radius: 16px;">
+        <div style="font-size: 0.75rem; color: var(--muted); font-weight: 700; text-transform: uppercase;">Lượt xem</div>
+        <div style="font-size: 2.2rem; font-weight: 900;" class="gt-main">${Number(an.view_count || 0).toLocaleString()}</div>
+        <div style="font-size: 0.78rem; color: var(--muted); margin-top: 4px;">Số liệu được lưu theo thời điểm</div>
+      </div>
+      <div class="glass" style="padding: 22px; border-radius: 16px;">
+        <div style="font-size: 0.75rem; color: var(--muted); font-weight: 700; text-transform: uppercase;">Tỷ lệ xem trung bình</div>
+        <div style="font-size: 2.2rem; font-weight: 900;" class="gt-cool">${Number(an.retention_rate || 0)}%</div>
+        <div style="font-size: 0.78rem; color: var(--muted); margin-top: 4px;">Thời gian xem TB: ${Number(an.watch_time_avg_sec || 0)} giây</div>
+      </div>
+      <div class="glass" style="padding: 22px; border-radius: 16px;">
+        <div style="font-size: 0.75rem; color: var(--muted); font-weight: 700; text-transform: uppercase;">Lượt thích</div>
+        <div style="font-size: 2.2rem; font-weight: 900;" class="gt-gold">${Number(an.like_count || 0).toLocaleString()}</div>
+        <div style="font-size: 0.78rem; color: var(--muted); margin-top: 4px;">${Number(an.comment_count || 0).toLocaleString()} bình luận · ${Number(an.share_count || 0).toLocaleString()} lượt chia sẻ</div>
+      </div>
+    `;
+  }
+
+  // AI Recommendations
+  const recContainer = document.getElementById('analytics-recommendation-grid');
+  if (recContainer) {
+    if (data.ai_recommendations && Array.isArray(data.ai_recommendations) && data.ai_recommendations.length) {
+      const rColors = ['#fb7185','#22d3ee','#4ade80','#facc15','#a78bfa'];
+      recContainer.innerHTML = data.ai_recommendations.map((r, i) => `
+        <div style="background: rgba(0,0,0,0.3); border-radius: 12px; padding: 16px; border: 1px solid var(--border);">
+          <div style="font-size: 0.8rem; font-weight: 700; color: ${rColors[i%rColors.length]}; margin-bottom: 6px;">💡 ${r.title || r.type || 'Đề xuất '+(i+1)}</div>
+          <p style="font-size: 0.85rem; color: #cbd5e1; line-height: 1.6;">${escapeHtml(r.description || r.content || r)}</p>
+        </div>
+      `).join('');
+    } else {
+      recContainer.innerHTML = '<div class="empty-state" style="grid-column:1/-1;">Chưa có gợi ý. Lưu số liệu trước rồi chọn “Tạo gợi ý bằng AI”.</div>';
+    }
+  }
+}
+
+async function loadSocialConnections() {
+  if (!currentProjectId) return;
+  const result = await apiGet(`/social/projects/${currentProjectId}/connections`);
+  const heading = document.querySelector('#view-analytics > div');
+  if (!heading) return;
+  let panel = document.getElementById('social-analytics-connections');
+  if (!panel) {
+    panel = document.createElement('section');
+    panel.id = 'social-analytics-connections';
+    panel.style.cssText = 'margin:16px 0;padding:18px;border:1px solid var(--border);border-radius:14px;background:rgba(255,255,255,.025);';
+    heading.insertAdjacentElement('afterend', panel);
+  }
+  const labels = {
+    youtube: 'YouTube',
+    tiktok: 'TikTok',
+    facebook: 'Facebook Page',
+    instagram: 'Instagram Business'
+  };
+  const cards = result.available_platforms.map(item => {
+    const linked = result.connections.find(connection => connection.platform === item.platform);
+    const label = labels[item.platform] || item.platform;
+    const actions = linked
+      ? `<span style="color:#4ade80;font-size:.78rem;">Đã kết nối: ${escapeHtml(linked.account_name || linked.account_id || label)}</span>
+         <button onclick="syncSocialAnalytics('${item.platform}')" class="btn btn-ghost" style="padding:6px 9px;font-size:.74rem;">Đồng bộ</button>
+         <button onclick="disconnectSocialAccount(${Number(linked.id)})" class="btn btn-ghost" style="padding:6px 9px;font-size:.74rem;">Ngắt kết nối</button>`
+      : `<button onclick="connectSocialAccount('${item.platform}')" class="btn btn-primary" ${item.configured ? '' : 'disabled title="Cần cấu hình OAuth trong backend/.env"'} style="padding:6px 9px;font-size:.74rem;">${item.configured ? 'Kết nối' : 'Chưa cấu hình OAuth'}</button>`;
+    return `<article style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;padding:10px 0;border-bottom:1px solid var(--border);">
+      <strong style="font-size:.84rem;">${escapeHtml(label)}</strong><div style="display:flex;align-items:center;gap:7px;flex-wrap:wrap;">${actions}</div>
+    </article>`;
+  }).join('');
+  panel.innerHTML = `<h2 style="margin:0 0 5px;font-size:1rem;">Kết nối số liệu mạng xã hội</h2>
+    <p style="margin:0 0 8px;color:var(--muted);font-size:.76rem;">Cần đăng ký ứng dụng OAuth và được nền tảng cấp quyền analytics. CINAI chỉ đọc số liệu nội dung thuộc tài khoản bạn kết nối.</p>
+    ${cards}`;
+}
+
+function connectSocialAccount(platform) {
+  if (!currentProjectId) return showToast('Chưa có dự án được chọn.', true);
+  window.location.href = `${API_BASE}/social/projects/${currentProjectId}/${platform}/connect`;
+}
+
+async function syncSocialAnalytics(platform) {
+  try {
+    const result = await apiPost(
+      `/social/projects/${currentProjectId}/${platform}/sync?days=30`, {}
+    );
+    showToast(`Đã đồng bộ ${Number(result.synced)} nội dung từ ${result.account_name}.`);
+    await loadAnalytics();
+  } catch (error) {
+    showToast(error.message, true);
+  }
+}
+
+async function disconnectSocialAccount(connectionId) {
+  if (!window.confirm('Ngắt kết nối tài khoản này? Số liệu đã đồng bộ vẫn được giữ lại.')) return;
+  try {
+    await apiRequest(
+      `/social/projects/${currentProjectId}/connections/${connectionId}`,
+      { method: 'DELETE' }
+    );
+    await loadSocialConnections();
+    showToast('Đã ngắt kết nối tài khoản.');
+  } catch (error) {
+    showToast(error.message, true);
+  }
+}
+
+// ═══════════════════════════════════════════════════════
+//  STORY WORKSPACE
+// ═══════════════════════════════════════════════════════
+async function loadProjectEpisodes() {
+  const seasons = await apiGet(`/projects/${currentProjectId}/seasons`);
+  const seasonsList = document.getElementById('story-season-list');
+  if (seasonsList) {
+    seasonsList.innerHTML = seasons.length ? seasons.map(season => `
+      <article style="margin-bottom:6px;padding:8px;border:1px solid var(--border);border-radius:8px;">
+        <strong style="font-size:.8rem;">Mùa ${Number(season.season_number)} · ${escapeHtml(season.title)}</strong>
+        <span style="display:block;color:var(--muted);font-size:.72rem;">${Number(season.episode_count)} tập</span>
+        <button onclick="editStorySeason(${Number(season.season_number)})" class="btn btn-ghost" style="margin-top:5px;padding:4px 7px;font-size:.7rem;">Sửa</button>
+        ${Number(season.season_number) > 1 && Number(season.episode_count) === 0 ? `<button onclick="deleteStorySeason(${Number(season.season_number)})" class="btn btn-ghost" style="margin-top:5px;padding:4px 7px;font-size:.7rem;">Xóa</button>` : ''}
+      </article>
+    `).join('') : '<div class="empty-state" style="padding:8px;">Chưa có mùa.</div>';
+  }
+  if (seasons.length && !seasons.some(item => Number(item.season_number) === currentSeasonNumber)) {
+    currentSeasonNumber = Number(seasons[0].season_number);
+    sessionStorage.setItem('cinai_season_number', currentSeasonNumber);
+  }
+  const episodes = await apiGet(`/projects/${currentProjectId}/episodes`);
+  if (episodes.length && !episodes.some(item => item.episode_number === currentEpisodeNumber)) {
+    currentEpisodeNumber = episodes[0].episode_number;
+    sessionStorage.setItem('cinai_episode_number', currentEpisodeNumber);
+  }
+  const activeEpisode = episodes.find(item => Number(item.episode_number) === currentEpisodeNumber);
+  if (activeEpisode && activeEpisode.season_number) {
+    currentSeasonNumber = Number(activeEpisode.season_number);
+    sessionStorage.setItem('cinai_season_number', currentSeasonNumber);
+  }
+  const list = document.getElementById('story-episode-list');
+  if (!list) return episodes;
+  list.innerHTML = episodes.length ? episodes.map(episode => `
+    <article style="margin-bottom:8px;padding:12px;border:1px solid ${episode.episode_number === currentEpisodeNumber ? 'rgba(139,92,246,.55)' : 'var(--border)'};border-radius:10px;background:${episode.episode_number === currentEpisodeNumber ? 'rgba(91,82,240,.15)' : 'rgba(255,255,255,.025)'};">
+      <button onclick="selectStoryEpisode(${Number(episode.episode_number)})" style="display:block;width:100%;text-align:left;background:none;border:0;color:#f0f0ff;cursor:pointer;">
+        <strong>Mùa ${Number(episode.season_number || 1)} · Tập ${Number(episode.episode_number)} · ${escapeHtml(episode.title)}</strong>
+        <span style="display:block;margin-top:5px;color:var(--muted);font-size:.76rem;">${Number(episode.scene_count)} cảnh · ${Number(episode.script_versions)} phiên bản</span>
+        ${episode.synopsis ? `<span style="display:block;margin-top:5px;color:#cbd5e1;font-size:.78rem;">${escapeHtml(episode.synopsis)}</span>` : ''}
+      </button>
+      <button onclick="editStoryEpisode(${Number(episode.episode_number)})" class="btn btn-ghost" style="margin-top:8px;padding:5px 8px;font-size:.72rem;">Sửa tiêu đề / tóm tắt</button>
+    </article>
+  `).join('') : '<div class="empty-state" style="padding:12px;">Chưa có tập. Tạo tập mới để lên kế hoạch hoặc sinh kịch bản.</div>';
+  return episodes;
+}
+
+async function createStorySeason() {
+  if (!currentProjectId) return showToast('Chưa có dự án được chọn.', true);
+  const title = window.prompt('Tên mùa mới:', 'Mùa mới');
+  if (!title || !title.trim()) return;
+  const synopsis = window.prompt('Tóm tắt nội dung mùa:', '') || '';
+  try {
+    const season = await apiPost(`/projects/${currentProjectId}/seasons`, {
+      title: title.trim(),
+      synopsis
+    });
+    currentSeasonNumber = Number(season.season_number);
+    sessionStorage.setItem('cinai_season_number', currentSeasonNumber);
+    await loadProjectEpisodes();
+    showToast(`Đã tạo Mùa ${currentSeasonNumber}.`);
+  } catch (error) {
+    showToast(error.message, true);
+  }
+}
+
+async function editStorySeason(seasonNumber) {
+  const seasons = await apiGet(`/projects/${currentProjectId}/seasons`);
+  const season = seasons.find(item => Number(item.season_number) === seasonNumber);
+  if (!season) return showToast('Không tìm thấy mùa cần sửa.', true);
+  const title = window.prompt('Tên mùa:', season.title);
+  if (!title || !title.trim()) return;
+  const synopsis = window.prompt('Tóm tắt mùa:', season.synopsis || '');
+  if (synopsis === null) return;
+  try {
+    await apiRequest(`/projects/${currentProjectId}/seasons/${seasonNumber}`, {
+      method: 'PUT',
+      body: JSON.stringify({ title: title.trim(), synopsis })
+    });
+    await loadProjectEpisodes();
+    showToast('Đã cập nhật mùa.');
+  } catch (error) {
+    showToast(error.message, true);
+  }
+}
+
+async function deleteStorySeason(seasonNumber) {
+  if (!window.confirm(`Xóa Mùa ${seasonNumber}?`)) return;
+  try {
+    await apiRequest(`/projects/${currentProjectId}/seasons/${seasonNumber}`, {
+      method: 'DELETE'
+    });
+    await loadProjectEpisodes();
+    showToast('Đã xóa mùa.');
+  } catch (error) {
+    showToast(error.message, true);
+  }
+}
+
+async function createStoryEpisode() {
+  if (!currentProjectId) return showToast('Chưa có dự án được chọn.', true);
+  const title = window.prompt('Tên tập mới:', `Tập tiếp theo`);
+  if (!title || !title.trim()) return;
+  const synopsis = window.prompt('Tóm tắt mục tiêu/nội dung của tập này:', '') || '';
+  try {
+    const episode = await apiPost(`/projects/${currentProjectId}/episodes`, {
+      title: title.trim(),
+      synopsis,
+      season_number: currentSeasonNumber
+    });
+    currentEpisodeNumber = episode.episode_number;
+    sessionStorage.setItem('cinai_episode_number', currentEpisodeNumber);
+    await loadStory();
+    await loadScenes();
+    showToast(`Đã tạo tập ${episode.episode_number}.`);
+  } catch (error) {
+    showToast(error.message, true);
+  }
+}
+
+async function editStoryEpisode(episodeNumber) {
+  const episodes = await apiGet(`/projects/${currentProjectId}/episodes`);
+  const episode = episodes.find(item => item.episode_number === episodeNumber);
+  if (!episode) return showToast('Không tìm thấy tập cần sửa.', true);
+  const title = window.prompt('Tên tập:', episode.title);
+  if (!title || !title.trim()) return;
+  const synopsis = window.prompt('Tóm tắt/mục tiêu của tập:', episode.synopsis || '');
+  if (synopsis === null) return;
+  const seasonNumberText = window.prompt('Số mùa:', String(episode.season_number || 1));
+  if (seasonNumberText === null) return;
+  const seasonNumber = Number(seasonNumberText);
+  if (!Number.isInteger(seasonNumber) || seasonNumber < 1) {
+    return showToast('Số mùa phải là số nguyên dương.', true);
+  }
+  try {
+    await apiRequest(`/projects/${currentProjectId}/episodes/${episodeNumber}`, {
+      method: 'PUT',
+      body: JSON.stringify({ title: title.trim(), synopsis, season_number: seasonNumber })
+    });
+    await loadProjectEpisodes();
+    showToast('Đã cập nhật thông tin tập.');
+  } catch (error) {
+    showToast(error.message, true);
+  }
+}
+
+async function selectStoryEpisode(episodeNumber) {
+  currentEpisodeNumber = Number(episodeNumber);
+  sessionStorage.setItem('cinai_episode_number', currentEpisodeNumber);
+  const episodes = await apiGet(`/projects/${currentProjectId}/episodes`);
+  const episode = episodes.find(item => Number(item.episode_number) === currentEpisodeNumber);
+  if (episode && episode.season_number) {
+    currentSeasonNumber = Number(episode.season_number);
+    sessionStorage.setItem('cinai_season_number', currentSeasonNumber);
+  }
+  await loadStory();
+  await loadScenes();
+}
+
+async function restoreGeneration(generationId) {
+  if (!currentProjectId || !window.confirm('Khôi phục phiên bản này? Nội dung hiện tại sẽ được lưu lại trong lịch sử trước khi thay thế.')) return;
+  try {
+    const restored = await apiPost(
+      `/projects/${currentProjectId}/generations/${generationId}/restore`, {}
+    );
+    if (restored.step === 'ideas') {
+      const concepts = restored.output.concepts;
+      if (!Array.isArray(concepts)) throw new Error('Phiên bản concept không có dữ liệu hợp lệ.');
+      renderConceptCards(concepts);
+      switchTab('idea-builder');
+    } else {
+      if (restored.episode_number) {
+        currentEpisodeNumber = Number(restored.episode_number);
+        sessionStorage.setItem('cinai_episode_number', currentEpisodeNumber);
+      }
+      await loadStory();
+      await loadScenes();
+      await loadCharacters();
+      await loadWorld();
+      if (restored.step === 'analytics_recommendations') await loadAnalytics();
+    }
+    showToast('Đã khôi phục phiên bản AI.');
+  } catch (error) {
+    showToast(error.message, true);
+  }
+}
+
+
+async function saveScreenplayFromUI() {
+  const box = document.getElementById('story-screenplay-box');
+  if (!box) return;
+  const scriptText = box.innerText;
+  if (!scriptText || !scriptText.trim()) {
+    return showToast('Nội dung kịch bản trống.', true);
+  }
+  try {
+    await apiRequest(`/projects/${currentProjectId}/story`, {
+      method: 'PUT',
+      body: JSON.stringify({
+        fountain_script: scriptText,
+        episode_number: currentEpisodeNumber
+      })
+    });
+    showToast('Đã lưu kịch bản vào cơ sở dữ liệu thành công!');
+  } catch (err) {
+    showToast(err.message, true);
+  }
+}
+
+async function loadStory() {
+  if (!currentProjectId) {
+    const projectTitle = document.getElementById('story-project-title');
+    const screenplay = document.getElementById('story-screenplay-box');
+    const episodes = document.getElementById('story-episode-list');
+    const seasons = document.getElementById('story-season-list');
+    if (projectTitle) projectTitle.textContent = 'Chọn hoặc tạo dự án để xem kịch bản.';
+    if (screenplay) screenplay.textContent = 'Kịch bản của dự án sẽ xuất hiện ở đây.';
+    if (episodes) episodes.textContent = 'Chưa có tập để hiển thị.';
+    if (seasons) seasons.textContent = 'Chưa có mùa để hiển thị.';
+    return;
+  }
+  const episodes = await loadProjectEpisodes();
+  const episodeExists = episodes.some(item => item.episode_number === currentEpisodeNumber);
+  const query = episodeExists ? `?episode_number=${currentEpisodeNumber}` : '';
+  const data = await apiGet(`/projects/${currentProjectId}/story${query}`);
+  const live = !!data;
+
+  const h1 = document.querySelector('#view-story-workspace h2');
+  const h1main = document.querySelector('#view-story-workspace h1');
+  if (h1main) {
+    const existing = h1main.querySelector('.api-status-pill');
+    if (existing) existing.remove();
+  }
+
+  const story = data.story || data;
+  const bible = data.story_bible || {};
+  const projectTitle = document.getElementById('story-project-title');
+  if (projectTitle) projectTitle.textContent = document.getElementById('current-project-title')?.textContent || 'Dự án đang chọn';
+  const scriptBox = document.getElementById('story-screenplay-box');
+  const history = await apiGet(`/projects/${currentProjectId}/generations?limit=8`);
+  const historyContainer = document.getElementById('ai-generation-history');
+  if (historyContainer) {
+    historyContainer.innerHTML = history.length
+      ? history.map(item => `
+        <details style="padding:10px 0;border-bottom:1px solid var(--border);">
+          <summary style="cursor:pointer;color:#c4b5fd;">${escapeHtml(item.step)} · ${escapeHtml(item.created_at)}</summary>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;margin:8px 0;">
+            <button onclick="restoreGeneration(${Number(item.id)})" class="btn btn-ghost" style="padding:6px 10px;font-size:.75rem;">Khôi phục phiên bản</button>
+            <button onclick="compareGeneration(${Number(item.id)})" class="btn btn-ghost" style="padding:6px 10px;font-size:.75rem;">Xem dữ liệu</button>
+          </div>
+          <details style="margin:6px 0;"><summary style="cursor:pointer;color:var(--muted);font-size:.78rem;">Đầu vào</summary>
+            <pre style="white-space:pre-wrap;overflow-wrap:anywhere;max-height:160px;overflow:auto;color:var(--muted);font-size:.72rem;">${escapeHtml(JSON.stringify(item.input, null, 2))}</pre>
+          </details>
+          <pre style="white-space:pre-wrap;overflow-wrap:anywhere;max-height:220px;overflow:auto;color:var(--muted);font-size:.75rem;">${escapeHtml(JSON.stringify(item.output, null, 2))}</pre>
+        </details>`).join('')
+      : '<p style="color:var(--muted);">Chưa có phiên bản AI được lưu.</p>';
+  }
+
+  if (!Object.keys(bible).length && !story.fountain_script) {
+    if (scriptBox) scriptBox.textContent = 'Tập này chưa có kịch bản. Tạo Story Bible, sau đó chọn “Tạo kịch bản”.';
+    return;
+  }
+
+  // Update screenplay content
+  if (scriptBox && story.fountain_script) {
+    // Convert basic fountain to HTML
+    const lines = story.fountain_script.split('\n');
+    scriptBox.innerHTML = lines.map(line => {
+      if (line.trim() === line.trim().toUpperCase() && line.trim().length > 0 && /^[A-Z\s\.]+$/.test(line.trim())) {
+        return `<div style="color: #818cf8; font-weight: 700;">${escapeHtml(line)}</div>`;
+      } else if (line.startsWith('(') && line.endsWith(')')) {
+        return `<div style="text-align: center; color: var(--muted);">${escapeHtml(line)}</div>`;
+      } else if (line.trim() === '') {
+        return '<div style="margin: 6px 0;"></div>';
+      } else {
+        return `<div style="color: var(--muted); margin: 4px 0;">${escapeHtml(line)}</div>`;
+      }
+    }).join('');
+  } else if (scriptBox) {
+    scriptBox.textContent = 'Chưa có kịch bản. Tạo kịch bản sau khi Story Bible đã được lưu.';
+  }
+
+  async function compareGeneration(generationId) {
+    try {
+      const history = await apiGet(`/projects/${currentProjectId}/generations?limit=50`);
+      const item = history.find(generation => generation.id === generationId);
+      if (!item) return showToast('Không tìm thấy phiên bản cần xem.', true);
+      window.alert(
+        `Bước: ${item.step}\nNgày: ${item.created_at}\n\nĐầu vào:\n${JSON.stringify(item.input, null, 2)}\n\nKết quả:\n${JSON.stringify(item.output, null, 2)}`
+      );
+    } catch (error) {
+      showToast(error.message, true);
+    }
+  }
+
+  // Update logline / title
+  if (story.logline && h1) {
+    const loglineEl = document.createElement('p');
+    loglineEl.style.cssText = 'font-size:0.85rem;color:var(--muted);margin-top:6px;';
+    loglineEl.textContent = story.logline;
+    const existingLogline = h1.nextElementSibling;
+    if (existingLogline && existingLogline.tagName === 'P') {
+      existingLogline.textContent = story.logline;
+    }
+  }
+}
+
+function escapeHtml(value) {
+  return String(value ?? '').replace(/[&<>"']/g, character => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+  })[character]);
+}
+
+async function recordAnalytics(event) {
+  event.preventDefault();
+  if (!currentProjectId) return showToast('Chưa có dự án được chọn.', true);
+  const formData = new FormData(event.currentTarget);
+  const values = Object.fromEntries(formData.entries());
+  for (const key of Object.keys(values)) values[key] = Number(values[key]);
+  try {
+    await apiPost(`/projects/${currentProjectId}/analytics`, values);
+    showToast('Đã lưu số liệu analytics.');
+    await loadAnalytics();
+    await loadDashboard();
+  } catch (error) {
+    showToast(error.message, true);
+  }
+}
+
+async function importAnalyticsCsv(event) {
+  event.preventDefault();
+  if (!currentProjectId) return showToast('Chưa có dự án được chọn.', true);
+  const form = event.currentTarget;
+  const file = form.elements.csv_file.files?.[0];
+  if (!file) return showToast('Hãy chọn tệp CSV để nhập.', true);
+  const button = form.querySelector('button[type="submit"]');
+  if (button) button.disabled = true;
+  try {
+    const result = await apiUpload(
+      `/projects/${currentProjectId}/analytics/import-csv`,
+      file
+    );
+    showToast(`Đã nhập ${Number(result.imported)} dòng số liệu.`);
+    form.reset();
+    await loadAnalytics();
+    await loadDashboard();
+  } catch (error) {
+    showToast(error.message, true);
+  } finally {
+    if (button) button.disabled = false;
+  }
+}
+
+async function generateAnalyticsRecommendations() {
+  if (!currentProjectId) return showToast('Chưa có dự án được chọn.', true);
+  try {
+    await apiPost(`/projects/${currentProjectId}/recommendations`, {
+      ai_provider: document.getElementById('builder-ai-provider')?.value || 'gemini'
+    });
+    showToast('AI đã tạo gợi ý dựa trên số liệu analytics.');
+    await loadAnalytics();
+  } catch (error) {
+    showToast(error.message, true);
+  }
+}
+
+async function exportAnalytics() {
+  if (!currentProjectId) return showToast('Chưa có dự án được chọn.', true);
+  try {
+    const response = await apiGet(`/projects/${currentProjectId}/analytics`);
+    const history = response.data?.history || [];
+    if (!history.length) return showToast('Chưa có số liệu để xuất.', true);
+    const headers = Object.keys(history[0]);
+    const csv = [headers.join(','), ...history.map(row =>
+      headers.map(key => JSON.stringify(row[key] ?? '')).join(',')
+    )].join('\r\n');
+    const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' }));
+    const anchor = document.createElement('a');
+    anchor.href = url;
+    anchor.download = `cinai-analytics-${currentProjectId}.csv`;
+    anchor.click();
+    URL.revokeObjectURL(url);
+  } catch (error) {
+    showToast(error.message, true);
+  }
+}
+
+async function createProject() {
+  const title = window.prompt('Tên dự án mới:');
+  if (!title || !title.trim()) return;
+  try {
+    const project = await apiPost('/projects/', { title: title.trim() });
+    currentProjectId = project.id;
+    sessionStorage.setItem('cinai_project_id', currentProjectId);
+    _allAssets = null;
+    await loadDashboard();
+    showToast('Đã tạo dự án mới.');
+  } catch (error) {
+    showToast(error.message, true);
+  }
+}
+
+async function selectProject(projectId) {
+  if (_assetPollingTimer) window.clearInterval(_assetPollingTimer);
+  _assetPollingTimer = null;
+  currentProjectId = Number(projectId);
+  sessionStorage.setItem('cinai_project_id', currentProjectId);
+  currentEpisodeNumber = 1;
+  sessionStorage.setItem('cinai_episode_number', currentEpisodeNumber);
+  _allAssets = null;
+  await loadDashboard();
+  showToast('Đã chuyển dự án đang làm việc.');
+}
+
+function renderConceptCards(concepts) {
+  _generatedConcepts = concepts;
+  const container = document.getElementById('builder-concepts-container');
+  if (!container) return;
+  container.innerHTML = concepts.map((concept, index) => `
+    <article class="glass" style="padding:24px;border-radius:18px;border-left:4px solid #8b5cf6;">
+      <h3 style="font-size:1.15rem;font-weight:800;color:#f0f0ff;margin-bottom:8px;">
+        ${escapeHtml(concept.title || `Concept ${index + 1}`)}
+      </h3>
+      <p style="font-size:.9rem;color:#cbd5e1;line-height:1.7;margin-bottom:12px;">
+        <strong>Logline:</strong> ${escapeHtml(concept.logline || 'Chưa có logline')}
+      </p>
+      <p style="font-size:.85rem;color:#c4b5fd;margin-bottom:14px;">
+        ${escapeHtml(concept.hook || concept.plot_summary || '')}
+      </p>
+      <button onclick="selectConcept(${index})" class="btn btn-primary" style="padding:8px 18px;">
+        Chọn concept và tạo Story Bible
+      </button>
+    </article>
+  `).join('');
+}
+
+async function triggerGenerateConcepts() {
+  const idea = document.getElementById('builder-idea-input')?.value.trim();
+  const genre = document.getElementById('builder-genre-select')?.value || 'Tự do';
+  const aiProvider = document.getElementById('builder-ai-provider')?.value || 'gemini';
+  if (!idea) return showToast('Hãy nhập ý tưởng trước khi tạo concept.', true);
+  if (!requireSelectedProject(() => triggerGenerateConcepts())) return;
+
+  const button = document.getElementById('btn-builder-gen');
+  const buttonText = document.getElementById('btn-builder-text');
+  if (button) button.disabled = true;
+  if (buttonText) buttonText.textContent = `${aiProvider === 'grok' ? 'Grok' : 'Gemini'} đang xử lý...`;
+  try {
+    const result = await apiPost('/ai/ideas/generate', {
+      project_id: currentProjectId,
+      raw_idea: idea,
+      genre,
+      ai_provider: aiProvider
+    });
+    if (!Array.isArray(result.concepts) || !result.concepts.length) {
+      throw new Error('Công cụ AI không trả về danh sách gợi ý hợp lệ.');
+    }
+    renderConceptCards(result.concepts);
+    showToast('Concept đã được tạo và lưu vào lịch sử AI.');
+  } catch (error) {
+    showToast(error.message, true);
+  } finally {
+    if (button) button.disabled = false;
+    if (buttonText) buttonText.textContent = 'Tạo gợi ý câu chuyện';
+  }
+}
+
+async function selectConcept(index) {
+  const concept = _generatedConcepts[index];
+  if (!concept || !currentProjectId) {
+    return showToast('Không tìm thấy concept cần chọn. Hãy tạo lại danh sách.', true);
+  }
+  try {
+    await apiPost('/ai/story-bible/generate', {
+      project_id: currentProjectId,
+      selected_concept: concept,
+      creator_answers: {},
+      ai_provider: document.getElementById('builder-ai-provider')?.value || 'gemini'
+    });
+    showToast('Story Bible đã được tạo và lưu.');
+    switchTab('story-workspace');
+  } catch (error) {
+    showToast(error.message, true);
+  }
+}
+
+async function generateProjectScript() {
+  if (!currentProjectId) return showToast('Chưa có dự án được chọn.', true);
+  try {
+    const saved = await apiGet(`/projects/${currentProjectId}/story`);
+    if (!saved.story_bible || !Object.keys(saved.story_bible).length) {
+      return showToast('Hãy tạo Story Bible trước khi sinh kịch bản.', true);
+    }
+    await apiPost('/ai/scripts/generate', {
+      project_id: currentProjectId,
+      story_bible: saved.story_bible,
+      episode_number: currentEpisodeNumber,
+      ai_provider: document.getElementById('builder-ai-provider')?.value || 'gemini'
+    });
+    showToast('Kịch bản và phân cảnh đã được lưu.');
+    await loadStory();
+    await loadProjectEpisodes();
+    await loadScenes();
+  } catch (error) {
+    showToast(error.message, true);
+  }
+}
+
+async function generateSceneImage(sceneId, prompt) {
+  if (!currentProjectId || !prompt) {
+    return showToast('Cảnh chưa có visual prompt để tạo ảnh.', true);
+  }
+  try {
+    await apiPost('/media/images', {
+      project_id: currentProjectId,
+      scene_id: sceneId,
+      prompt
+    });
+    showToast('Đã xếp hàng tạo ảnh. Theo dõi trạng thái trong Kho Asset.');
+    _allAssets = null;
+    await loadAssets();
+  } catch (error) {
+    showToast(error.message, true);
+  }
+}
+
+async function generateSceneSpeech(sceneId, text) {
+  if (!currentProjectId || !text) {
+    return showToast('Cảnh chưa có lời thoại để tạo giọng đọc.', true);
+  }
+  try {
+    await apiPost('/media/speech', {
+      project_id: currentProjectId,
+      scene_id: sceneId,
+      text,
+      voice: 'vi-VN-HoaiMyNeural'
+    });
+    showToast('Đã xếp hàng tạo giọng đọc. Theo dõi trạng thái trong Kho Asset.');
+    _allAssets = null;
+    await loadAssets();
+  } catch (error) {
+    showToast(error.message, true);
+  }
+}
+
+async function retryAsset(assetId) {
+  try {
+    await apiPost(`/media/assets/${assetId}/retry`, {});
+    _allAssets = null;
+    await loadAssets();
+    showToast('Đã xếp hàng thử tạo lại tài nguyên.');
+  } catch (error) {
+    showToast(error.message, true);
+  }
+}
+
+async function approveAsset(assetId) {
+  try {
+    await apiPost(`/media/assets/${assetId}/approve`, {});
+    _allAssets = null;
+    await loadAssets();
+    showToast('Tài nguyên đã được duyệt.');
+  } catch (error) {
+    showToast(error.message, true);
+  }
+}
+
+async function renderProjectVideo() {
+  if (!currentProjectId) return showToast('Chưa có dự án được chọn.', true);
+  const status = document.getElementById('video-render-status');
+  const renderButton = document.querySelector('#view-video-preview button[onclick="renderProjectVideo()"]');
+  try {
+    if (renderButton) renderButton.disabled = true;
+    const queued = _failedRenderId
+      ? await apiPost(
+        `/media/projects/${currentProjectId}/renders/${_failedRenderId}/retry`, {}
+      )
+      : await apiPost(
+        `/media/projects/${currentProjectId}/render?episode_number=${currentEpisodeNumber}`, {}
+      );
+    _failedRenderId = null;
+    if (renderButton) renderButton.textContent = 'Đang dựng video...';
+    if (status) status.textContent = 'Đang render video...';
+    let result = queued;
+    for (let attempt = 0; attempt < 120; attempt += 1) {
+      await new Promise(resolve => window.setTimeout(resolve, 3000));
+      result = await apiGet(`/media/projects/${currentProjectId}/renders/${queued.render_id}`);
+      if (result.status === 'ready' || result.status === 'failed') break;
+    }
+    if (result.status === 'ready' && result.file_url) {
+      const video = document.getElementById('cinai-rendered-video');
+      if (video) {
+        video.src = result.file_url;
+        video.style.display = 'block';
+        video.load();
+      }
+      const download = document.getElementById('video-download-link');
+      if (download) {
+        download.href = result.file_url;
+        download.download = `cinai-render-${queued.render_id}.mp4`;
+        download.style.display = 'block';
+      }
+      const placeholder = document.getElementById('video-preview-placeholder');
+      if (placeholder) placeholder.style.display = 'none';
+      if (status) status.textContent = 'Video đã render xong.';
+      if (renderButton) renderButton.textContent = 'Dựng video mới';
+    } else if (result.status === 'failed') {
+      _failedRenderId = result.id || queued.render_id;
+      throw new Error(result.error_message || 'FFmpeg render thất bại.');
+    } else {
+      if (status) status.textContent = 'Tác vụ vẫn đang chạy. Bạn có thể tải lại trang sau.';
+    }
+  } catch (error) {
+    if (status) status.textContent = error.message;
+    if (renderButton) {
+      renderButton.textContent = _failedRenderId ? 'Thử render lại' : 'Dựng video từ ảnh và âm thanh';
+    }
+    showToast(error.message, true);
+  } finally {
+    if (renderButton) renderButton.disabled = false;
+  }
+}
+
+async function loadMediaCapabilities() {
+  const section = document.querySelector('#view-video-preview .glass');
+  if (!section) return;
+  let status = document.getElementById('media-capability-status');
+  if (!status) {
+    status = document.createElement('div');
+    status.id = 'media-capability-status';
+    status.style.cssText = 'margin:0 0 14px;padding:12px;border:1px solid var(--border);border-radius:10px;color:var(--muted);font-size:.8rem;';
+    section.prepend(status);
+  }
+  status.textContent = 'Đang kiểm tra dịch vụ tạo media và FFmpeg…';
+  const subtitleLink = document.getElementById('subtitle-download-link');
+  if (subtitleLink && currentProjectId) {
+    subtitleLink.href = `${API_BASE}/media/projects/${currentProjectId}/episodes/${currentEpisodeNumber}/subtitles.srt`;
+  }
+  try {
+    const capabilities = await apiGet('/media/capabilities');
+    const providerLabel = capabilities.image_provider === 'configured'
+      ? 'Dịch vụ ảnh: đã cấu hình' : 'Dịch vụ ảnh: chưa có STABILITY_API_KEY';
+    const speechLabel = capabilities.speech_provider === 'available'
+      ? 'Giọng đọc: Edge TTS sẵn sàng' : 'Giọng đọc: thiếu package edge-tts';
+    const ffmpegLabel = capabilities.ffmpeg === 'available'
+      ? `FFmpeg: ${escapeHtml(capabilities.ffmpeg_version || 'sẵn sàng')}`
+      : 'FFmpeg: chưa cài hoặc không chạy được';
+    status.innerHTML = `${escapeHtml(providerLabel)}<br>${escapeHtml(speechLabel)}<br>${ffmpegLabel}`;
+  } catch (error) {
+    status.textContent = `Không kiểm tra được media: ${error.message}`;
+  }
+}
+
+</script>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    :root {
+      --gold: #c9a84c;
+      --gold-light: #e8c96a;
+      --indigo: #5b52f0;
+      --violet: #8b5cf6;
+      --rose: #fb7185;
+      --cyan: #22d3ee;
+      --ink: #06060f;
+      --ink2: #0d0d1e;
+      --surface: rgba(255,255,255,0.032);
+      --border: rgba(255,255,255,0.08);
+      --text: #f0f0ff;
+      --muted: #8a8ab5;
+    }
+    body {
+      font-family: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+      background: var(--ink);
+      color: var(--text);
+      min-height: 100vh;
+      overflow-x: hidden;
+      display: flex;
+      flex-direction: column;
+    }
+    /* Noise texture */
+    body::before {
+      content: '';
+      position: fixed; inset: 0; z-index: 0; pointer-events: none;
+      opacity: 0.025;
+      background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 512 512' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.75' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+      background-size: 200px 200px;
+    }
+    .gt-main {
+      background: linear-gradient(125deg, #818cf8 0%, #a78bfa 35%, #fb7185 70%, #fbbf24 100%);
+      -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text;
+    }
+    .gt-gold {
+      background: linear-gradient(125deg, #e8c96a 0%, #c9a84c 40%, #a07830 100%);
+      -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text;
+    }
+    .gt-cool {
+      background: linear-gradient(125deg, #22d3ee 0%, #818cf8 60%, #c084fc 100%);
+      -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text;
+    }
+    .glass {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      backdrop-filter: blur(20px);
+    }
+    .btn {
+      display: inline-flex; align-items: center; justify-content: center; gap: 8px;
+      font-weight: 600; cursor: pointer; border: none; transition: all 0.25s ease;
+      text-decoration: none; border-radius: 10px;
+    }
+    .btn-primary {
+      background: linear-gradient(135deg, #5b52f0, #8b5cf6, #fb7185);
+      color: #fff; box-shadow: 0 4px 20px rgba(91,82,240,0.35);
+    }
+    .btn-primary:hover { transform: translateY(-2px); box-shadow: 0 8px 30px rgba(91,82,240,0.5); }
+    .btn-ghost {
+      background: rgba(255,255,255,0.05); color: #cbd5e1; border: 1px solid var(--border);
+    }
+    .btn-ghost:hover { background: rgba(255,255,255,0.1); color: #fff; }
+    .btn-gold {
+      background: linear-gradient(135deg, #e8c96a, #c9a84c); color: #0a0812; font-weight: 700;
+    }
+    .btn-gold:hover { transform: translateY(-2px); }
+
+    /* Studio Layout */
+    .studio-container {
+      display: flex;
+      flex: 1;
+      height: 100vh;
+      overflow: hidden;
+      position: relative;
+      z-index: 1;
+    }
+    /* Sidebar */
+    .studio-sidebar {
+      width: 260px;
+      background: rgba(10, 10, 24, 0.95);
+      border-right: 1px solid var(--border);
+      display: flex;
+      flex-direction: column;
+      flex-shrink: 0;
+      backdrop-filter: blur(24px);
+    }
+    .nav-tab-btn {
+      width: 100%;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 12px 18px;
+      font-size: 0.88rem;
+      font-weight: 600;
+      color: var(--muted);
+      background: transparent;
+      border: none;
+      border-radius: 10px;
+      cursor: pointer;
+      transition: all 0.2s ease;
+      text-align: left;
+    }
+    .nav-tab-btn:hover {
+      color: var(--text);
+      background: rgba(255,255,255,0.04);
+    }
+    .nav-tab-btn.active {
+      color: #fff;
+      background: linear-gradient(135deg, rgba(91,82,240,0.25), rgba(139,92,246,0.2));
+      border: 1px solid rgba(139,92,246,0.4);
+      box-shadow: 0 4px 16px rgba(91,82,240,0.2);
+    }
+    .nav-tab-btn .tab-badge {
+      margin-left: auto;
+      font-size: 0.7rem;
+      padding: 2px 8px;
+      border-radius: 999px;
+      background: rgba(255,255,255,0.08);
+      color: var(--muted);
+    }
+    .nav-tab-btn.active .tab-badge {
+      background: rgba(139,92,246,0.3);
+      color: #c4b5fd;
+    }
+
+    /* Main Workspace */
+    .studio-main {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      background: radial-gradient(circle at 50% 10%, rgba(91,82,240,0.08), transparent 70%);
+    }
+    /* Topbar */
+    .studio-topbar {
+      height: 64px;
+      padding: 0 24px;
+      border-bottom: 1px solid var(--border);
+      background: rgba(10, 10, 24, 0.7);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      backdrop-filter: blur(20px);
+      flex-shrink: 0;
+    }
+    /* Content Area */
+    .studio-body {
+      flex: 1;
+      overflow-y: auto;
+      padding: 28px;
+    }
+    /* Screen Views */
+    .screen-view {
+      display: none;
+      animation: fadeIn 0.3s ease;
+    }
+    .screen-view.active {
+      display: block;
+    }
+    @keyframes fadeIn {
+      from { opacity: 0; transform: translateY(8px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+
+    /* Badges */
+    .status-badge {
+      display: inline-flex; align-items: center; gap: 6px;
+      padding: 4px 10px; border-radius: 999px; font-size: 0.72rem; font-weight: 700;
+      text-transform: uppercase; letter-spacing: 0.04em;
+    }
+    .badge-approved { background: rgba(34,197,94,0.15); color: #4ade80; border: 1px solid rgba(34,197,94,0.3); }
+    .badge-review { background: rgba(234,179,8,0.15); color: #facc15; border: 1px solid rgba(234,179,8,0.3); }
+    .badge-generating { background: rgba(59,130,246,0.15); color: #60a5fa; border: 1px solid rgba(59,130,246,0.3); }
+    .badge-draft { background: rgba(148,163,184,0.15); color: #94a3b8; border: 1px solid rgba(148,163,184,0.3); }
+    .badge-failed { background: rgba(239,68,68,0.15); color: #f87171; border: 1px solid rgba(239,68,68,0.3); }
+
+    :focus-visible { outline: 3px solid #a78bfa; outline-offset: 3px; }
+    .guide-card {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 18px;
+      align-items: center;
+      padding: 22px 24px;
+      margin-bottom: 22px;
+      border: 1px solid rgba(167,139,250,.28);
+      border-radius: 18px;
+      background: linear-gradient(120deg, rgba(91,82,240,.15), rgba(255,255,255,.025));
+    }
+    .guide-steps {
+      display: grid;
+      grid-template-columns: repeat(5, minmax(0, 1fr));
+      gap: 10px;
+    }
+    .guide-step {
+      min-width: 0;
+      padding: 12px;
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      background: rgba(255,255,255,.025);
+    }
+    .empty-state {
+      padding: 28px;
+      border: 1px dashed rgba(255,255,255,.18);
+      border-radius: 16px;
+      color: var(--muted);
+      text-align: center;
+    }
+    #video-player-mock { display: none !important; }
+    .table-wrap { overflow-x: auto; }
+    @media (max-width: 1050px) {
+      .studio-sidebar { width: 220px; }
+      .studio-body { padding: 22px; }
+      #dashboard-kpi-grid { grid-template-columns: repeat(2, minmax(0, 1fr)) !important; }
+      .guide-steps { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+    }
+    @media (max-width: 800px) {
+      .studio-container { height: auto; min-height: 100vh; flex-direction: column; overflow: visible; }
+      .studio-sidebar { width: 100%; max-height: none; }
+      .studio-sidebar > div:first-child { padding: 12px 16px !important; }
+      .studio-sidebar > div:nth-child(2) { flex: initial !important; display: flex !important; flex-direction: row !important; overflow-x: auto !important; padding: 8px !important; }
+      .studio-sidebar > div:nth-child(2) > div { display: none; }
+      .studio-sidebar .nav-tab-btn { width: auto; flex: 0 0 auto; padding: 10px 12px; }
+      .studio-sidebar .nav-tab-btn .tab-badge { display: none; }
+      .studio-sidebar > div:last-child { display: none; }
+      .studio-main { min-height: calc(100vh - 120px); overflow: visible; }
+      .studio-topbar { height: auto; padding: 12px 16px; align-items: flex-start; gap: 12px; flex-wrap: wrap; }
+      .studio-topbar > div { flex-wrap: wrap; }
+      .studio-body { overflow: visible; padding: 16px; }
+      .guide-card { grid-template-columns: 1fr; }
+      #view-dashboard > div:first-child { flex-direction: column !important; align-items: stretch !important; }
+      #view-dashboard > div:first-child button { align-self: flex-start; }
+      #guide-next-action { white-space: nowrap; }
+      .guide-steps { grid-template-columns: 1fr; }
+      .builder-controls { grid-template-columns: 1fr 1fr !important; }
+      .builder-controls > div:last-child { grid-column: 1 / -1; }
+      .builder-controls > div:last-child button { width: 100%; }
+      #dashboard-kpi-grid { grid-template-columns: 1fr 1fr !important; }
+      #pipeline-status-grid { grid-template-columns: 1fr !important; }
+      #view-story-workspace > div,
+      #view-video-preview > div { grid-template-columns: 1fr !important; }
+      #view-analytics .analytics-recommendation-grid { grid-template-columns: 1fr !important; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after { scroll-behavior: auto !important; animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }
+    }
+
+    /* Custom Scrollbar */
+    ::-webkit-scrollbar { width: 6px; height: 6px; }
+    ::-webkit-scrollbar-track { background: var(--ink); }
+    ::-webkit-scrollbar-thumb { background: rgba(139,92,246,0.4); border-radius: 99px; }
+  </style>
+</head>
+<body>
+
+<div class="studio-container">
+  <!-- ═════════ SIDEBAR WITH 9 SCREENS ═════════ -->
+  <aside class="studio-sidebar">
+    <!-- Brand -->
+    <div style="padding: 20px 22px; border-bottom: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between;">
+      <a href="index.html" style="display: flex; align-items: center; gap: 10px; text-decoration: none;">
+        <div style="width: 36px; height: 36px; border-radius: 10px; background: linear-gradient(135deg, #5b52f0, #8b5cf6); display: flex; align-items: center; justify-content: center; font-size: 1.1rem; box-shadow: 0 0 16px rgba(91,82,240,0.5);">🎬</div>
+        <div>
+          <span style="font-weight: 900; font-size: 1.2rem; letter-spacing: -0.04em;" class="gt-main">CINAI</span>
+          <span style="display: block; font-size: 0.68rem; color: var(--gold); font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase;">Studio sáng tạo</span>
+        </div>
+      </a>
+      <a href="index.html" title="Về trang chủ" style="color: var(--muted); text-decoration: none; font-size: 0.85rem; padding: 6px; border-radius: 6px; transition: 0.2s;" onmouseover="this.style.color='#fff'" onmouseout="this.style.color='var(--muted)'">🏠</a>
+    </div>
+
+    <!-- Navigation List: 9 screens from syllabus -->
+    <div style="flex: 1; padding: 14px 12px; display: flex; flex-direction: column; gap: 4px; overflow-y: auto;">
+      <div style="font-size: 0.7rem; font-weight: 700; color: #64748b; letter-spacing: 0.08em; text-transform: uppercase; padding: 8px 10px 4px;">LÀM PHIM TỪ Ý TƯỞNG</div>
+      
+      <button class="nav-tab-btn active" aria-current="page" onclick="switchTab('dashboard')">
+        <span style="font-size: 1.1rem;">📊</span>
+        <span>Tổng quan</span>
+      </button>
+
+      <button class="nav-tab-btn" onclick="switchTab('idea-builder')">
+        <span style="font-size: 1.1rem;">💡</span>
+        <span>Tạo ý tưởng</span>
+        <span class="tab-badge" style="color:#a78bfa;">Bước 1</span>
+      </button>
+
+      <button class="nav-tab-btn" onclick="switchTab('story-workspace')">
+        <span style="font-size: 1.1rem;">📝</span>
+        <span>Kịch bản</span>
+        <span class="tab-badge">Bước 2</span>
+      </button>
+
+      <button class="nav-tab-btn" onclick="switchTab('character-studio')">
+        <span style="font-size: 1.1rem;">👤</span>
+        <span>Nhân vật</span>
+        <span class="tab-badge">Hồ sơ</span>
+      </button>
+
+      <button class="nav-tab-btn" onclick="switchTab('world-builder')">
+        <span style="font-size: 1.1rem;">🌍</span>
+        <span>Bối cảnh</span>
+        <span class="tab-badge">Hồ sơ</span>
+      </button>
+
+      <div style="font-size: 0.7rem; font-weight: 700; color: #64748b; letter-spacing: 0.08em; text-transform: uppercase; padding: 14px 10px 4px;">TẠO VÀ XUẤT VIDEO</div>
+
+      <button class="nav-tab-btn" onclick="switchTab('scene-editor')">
+        <span style="font-size: 1.1rem;">🎬</span>
+        <span>Phân cảnh</span>
+        <span class="tab-badge">Bước 3</span>
+      </button>
+
+      <button class="nav-tab-btn" onclick="switchTab('asset-library')">
+        <span style="font-size: 1.1rem;">🖼️</span>
+        <span>Ảnh và âm thanh</span>
+        <span class="tab-badge">Bước 4</span>
+      </button>
+
+      <button class="nav-tab-btn" onclick="switchTab('video-preview')">
+        <span style="font-size: 1.1rem;">▶️</span>
+        <span>Xem và xuất video</span>
+        <span class="tab-badge" style="color:#4ade80;">Bước 5</span>
+      </button>
+
+      <button class="nav-tab-btn" onclick="switchTab('analytics')">
+        <span style="font-size: 1.1rem;">📈</span>
+        <span>Số liệu hiệu quả</span>
+        <span class="tab-badge" style="color:#fb7185;">Tùy chọn</span>
+      </button>
+    </div>
+
+    <!-- User / Project Card at Bottom -->
+    <div style="padding: 16px; border-top: 1px solid var(--border); background: rgba(0,0,0,0.2);">
+      <div style="display: flex; align-items: center; gap: 10px;">
+        <div id="current-user-avatar" style="width: 34px; height: 34px; border-radius: 50%; background: linear-gradient(135deg, #ec4899, #f97316); display: flex; align-items: center; justify-content: center; font-size: 0.85rem; font-weight: 800; border: 2px solid var(--border);">CI</div>
+        <div style="overflow: hidden;">
+          <div id="current-user-name" style="font-size: 0.85rem; font-weight: 700; color: #f1f5f9; white-space: nowrap; text-overflow: ellipsis;">CINAI Creator</div>
+          <div id="current-user-status" style="font-size: 0.72rem; color: #4ade80;">Chưa đăng nhập</div>
+        </div>
+      </div>
+    </div>
+  </aside>
+
+  <!-- ═════════ MAIN VIEWPORT ═════════ -->
+  <main class="studio-main">
+    <!-- Topbar -->
+    <header class="studio-topbar">
+      <div style="display: flex; align-items: center; gap: 16px;">
+        <div style="display: flex; align-items: center; gap: 8px; background: rgba(255,255,255,0.04); padding: 6px 14px; border-radius: 8px; border: 1px solid var(--border);">
+          <span style="font-size: 0.8rem; color: var(--muted);">Dự án:</span>
+          <span id="current-project-title" style="font-size: 0.88rem; font-weight: 700; color: #f0f0ff;">CINAI</span>
+          <span style="width: 6px; height: 6px; border-radius: 50%; background: #4ade80;"></span>
+        </div>
+        <span style="font-size: 0.8rem; color: var(--muted);">Quy trình: <strong style="color: #a78bfa;">Ý tưởng → Video 720p</strong></span>
+      </div>
+
+      <div style="display: flex; align-items: center; gap: 12px;">
+        <button onclick="switchTab('idea-builder')" class="btn btn-ghost" style="padding: 8px 16px; font-size: 0.82rem;">Bắt đầu tạo</button>
+        <button onclick="switchTab('video-preview')" class="btn btn-primary" style="padding: 8px 18px; font-size: 0.82rem;">Xem video</button>
+        <a href="index.html" class="btn btn-ghost" style="padding: 8px 14px; font-size: 0.82rem;">Về trang giới thiệu</a>
+      </div>
+    </header>
+
+    <!-- Body Area -->
+    <div class="studio-body">
+
+      <!-- ═════════ SCREEN 1: DASHBOARD ═════════ -->
+      <section id="view-dashboard" class="screen-view active">
+        <div style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 24px;">
+          <div>
+            <h1 style="font-size: 1.8rem; font-weight: 900; letter-spacing: -0.03em;">Bảng điều khiển</h1>
+            <p style="color: var(--muted); font-size: 0.9rem; margin-top: 4px;">Theo dõi tiến độ và tiếp tục bước làm phim tiếp theo của bạn.</p>
+          </div>
+          <button onclick="createProject()" class="btn btn-primary" style="padding: 10px 20px; font-size: 0.88rem;">+ Tạo dự án</button>
+        </div>
+
+        <div class="guide-card" aria-live="polite">
+          <div>
+            <div style="font-size:.76rem;color:#c4b5fd;font-weight:800;letter-spacing:.06em;text-transform:uppercase;">Lộ trình dành cho người mới</div>
+            <h2 id="guide-next-title" style="font-size:1.2rem;margin-top:6px;">Bắt đầu bằng một ý tưởng</h2>
+            <p id="guide-next-description" style="color:var(--muted);line-height:1.6;margin-top:5px;">Đi lần lượt từ ý tưởng, kịch bản, phân cảnh đến video. Bạn có thể chỉnh sửa từng bước.</p>
+          </div>
+          <button id="guide-next-action" onclick="switchTab('idea-builder')" class="btn btn-primary" style="padding:11px 18px;">Tạo ý tưởng →</button>
+        </div>
+        <div class="guide-steps" aria-label="Các bước tạo phim">
+          <div class="guide-step"><strong>1. Ý tưởng</strong><div style="font-size:.78rem;color:var(--muted);margin-top:4px;">Mô tả câu chuyện</div></div>
+          <div class="guide-step"><strong>2. Kịch bản</strong><div style="font-size:.78rem;color:var(--muted);margin-top:4px;">Phát triển nội dung</div></div>
+          <div class="guide-step"><strong>3. Phân cảnh</strong><div style="font-size:.78rem;color:var(--muted);margin-top:4px;">Chia thành các cảnh</div></div>
+          <div class="guide-step"><strong>4. Hình và giọng</strong><div style="font-size:.78rem;color:var(--muted);margin-top:4px;">Tạo hoặc tải tư liệu</div></div>
+          <div class="guide-step"><strong>5. Video</strong><div style="font-size:.78rem;color:var(--muted);margin-top:4px;">Xem và xuất bản dựng</div></div>
+        </div>
+
+        <!-- Thống kê thật từ tài khoản -->
+        <div id="dashboard-kpi-grid" style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; margin-bottom: 24px;">
+          <div class="glass" style="padding: 20px; border-radius: 16px;">
+            <div style="font-size: 0.75rem; color: var(--muted); text-transform: uppercase; font-weight: 700;">Dự án</div>
+            <div style="font-size: 2.2rem; font-weight: 900; margin-top: 6px;">—</div>
+            <div style="font-size: 0.78rem; color: var(--muted); margin-top: 4px;">Đang tải số liệu</div>
+          </div>
+          <div class="glass" style="padding: 20px; border-radius: 16px;">
+            <div style="font-size: 0.75rem; color: var(--muted); text-transform: uppercase; font-weight: 700;">Phân cảnh</div>
+            <div style="font-size: 2.2rem; font-weight: 900;" class="gt-main">—</div>
+            <div style="font-size: 0.78rem; color: var(--muted); margin-top: 4px;">Trong các dự án của bạn</div>
+          </div>
+          <div class="glass" style="padding: 20px; border-radius: 16px;">
+            <div style="font-size: 0.75rem; color: var(--muted); text-transform: uppercase; font-weight: 700;">Tư liệu</div>
+            <div style="font-size: 2.2rem; font-weight: 900;" class="gt-cool">—</div>
+            <div style="font-size: 0.78rem; color: var(--muted); margin-top: 4px;">Ảnh, âm thanh và video đã lưu</div>
+          </div>
+          <div class="glass" style="padding: 20px; border-radius: 16px;">
+            <div style="font-size: 0.75rem; color: var(--muted); text-transform: uppercase; font-weight: 700;">Lượt xem đã ghi nhận</div>
+            <div style="font-size: 2.2rem; font-weight: 900;" class="gt-gold">—</div>
+            <div style="font-size: 0.78rem; color: var(--muted); margin-top: 4px;">Có khi bạn nhập số liệu</div>
+          </div>
+        </div>
+
+        <!-- Pipeline Status Banner -->
+        <div class="glass" style="padding: 22px 28px; border-radius: 18px; margin-bottom: 24px;">
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px;">
+            <span style="font-size: 0.85rem; font-weight: 700; color: var(--gold);">Tiến độ dự án đang chọn</span>
+            <span id="pipeline-project-label" style="font-size: 0.8rem; color: var(--muted);">Chọn dự án để xem trạng thái</span>
+          </div>
+          <div id="pipeline-status-grid" style="display: grid; grid-template-columns: repeat(5, 1fr); gap: 12px; position: relative;">
+            <div class="empty-state" style="grid-column:1/-1;">Tiến độ sẽ xuất hiện khi có dữ liệu dự án.</div>
+          </div>
+        </div>
+
+        <!-- Recent Projects Table -->
+        <div class="glass" style="border-radius: 18px; padding: 24px;">
+          <h2 style="font-size: 1.1rem; font-weight: 700; margin-bottom: 16px;">Dự án của bạn</h2>
+          <div class="table-wrap">
+          <table style="width: 100%; border-collapse: collapse; font-size: 0.88rem;">
+            <thead>
+              <tr style="border-bottom: 1px solid var(--border); color: var(--muted); text-align: left;">
+                <th style="padding: 10px 14px;">TÊN PHIM</th>
+                <th style="padding: 10px 14px;">THỂ LOẠI</th>
+                <th style="padding: 10px 14px;">CẢNH / TƯ LIỆU</th>
+                <th style="padding: 10px 14px;">TRẠNG THÁI</th>
+                <th style="padding: 10px 14px; text-align: right;">THAO TÁC</th>
+              </tr>
+            </thead>
+            <tbody id="dashboard-projects-tbody">
+              <tr><td colspan="5" class="empty-state">Đang tải dự án…</td></tr>
+            </tbody>
+          </table>
+          </div>
+        </div>
+      </section>
+
+      <!-- ═════════ SCREEN 2: AI IDEA BUILDER ═════════ -->
+      <section id="view-idea-builder" class="screen-view">
+        <div style="max-width: 960px; margin: 0 auto;">
+          <div style="margin-bottom: 24px;">
+            <div style="font-size: 0.75rem; font-weight: 700; color: var(--gold); text-transform: uppercase; letter-spacing: 0.1em;">BƯỚC 1 · PHÁT TRIỂN CÂU CHUYỆN</div>
+            <h1 style="font-size: 1.8rem; font-weight: 900; letter-spacing: -0.03em;">Tạo ý tưởng phim</h1>
+            <p style="color: var(--muted); font-size: 0.9rem; margin-top: 4px;">Viết vài câu về câu chuyện bạn muốn kể, chọn công cụ AI, rồi tạo gợi ý để tiếp tục phát triển thành kịch bản.</p>
+          </div>
+
+          <!-- Prompt Form Card -->
+          <div class="glass" style="padding: 28px; border-radius: 20px; margin-bottom: 24px;">
+            <label for="builder-idea-input" style="display: block; font-size: 0.85rem; font-weight: 700; color: #c4b5fd; margin-bottom: 8px;">Ý tưởng phim của bạn</label>
+            <textarea id="builder-idea-input" rows="3" placeholder="Ví dụ: Một người giao hàng phát hiện món hàng cuối cùng mình giao có thể thay đổi tương lai của thành phố." style="width: 100%; background: rgba(0,0,0,0.3); border: 1px solid var(--border); border-radius: 12px; padding: 14px 18px; color: #f0f0ff; font-size: 0.95rem; outline: none; margin-bottom: 16px;"></textarea>
+            
+            <div class="builder-controls" style="display: grid; grid-template-columns: 1fr 1fr auto; gap: 14px; align-items: center;">
+              <div>
+                <label for="builder-ai-provider" style="display: block; font-size: 0.75rem; font-weight: 700; color: var(--muted); margin-bottom: 4px;">CÔNG CỤ AI</label>
+                <select id="builder-ai-provider" style="width: 100%; background: rgba(255,255,255,0.06); border: 1px solid var(--border); border-radius: 10px; padding: 10px 14px; color: #f0f0ff; font-size: 0.88rem; outline: none;">
+                  <option value="gemini">Google Gemini</option>
+                  <option value="grok">xAI Grok</option>
+                </select>
+              </div>
+              <div>
+                <label for="builder-genre-select" style="display: block; font-size: 0.75rem; font-weight: 700; color: var(--muted); margin-bottom: 4px;">THỂ LOẠI PHIM</label>
+                <select id="builder-genre-select" style="width: 100%; background: rgba(255,255,255,0.06); border: 1px solid var(--border); border-radius: 10px; padding: 10px 14px; color: #f0f0ff; font-size: 0.88rem; outline: none;">
+                  <option value="Sci-Fi / Cyberpunk">Sci-Fi / Cyberpunk</option>
+                  <option value="Kỳ ảo đô thị / Bí ẩn">Kỳ ảo đô thị / Bí ẩn</option>
+                  <option value="Hành động kịch tính">Hành động kịch tính</option>
+                  <option value="Tâm lý / Tình cảm">Tâm lý / Tình cảm</option>
+                  <option value="Hoạt hình Anime">Hoạt hình Anime</option>
+                </select>
+              </div>
+              <div style="align-self: flex-end;">
+                <button onclick="triggerGenerateConcepts()" id="btn-builder-gen" class="btn btn-primary" style="padding: 11px 26px; font-size: 0.9rem;">
+                  <span style="position:relative;z-index:1;" id="btn-builder-text">Tạo gợi ý câu chuyện</span>
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <!-- Concepts Output Box -->
+          <div id="builder-concepts-container" class="empty-state" aria-live="polite">
+            Gợi ý câu chuyện sẽ hiển thị ở đây sau khi bạn nhập ý tưởng và chọn “Tạo gợi ý”.
+          </div>
+        </div>
+      </section>
+
+      <!-- ═════════ SCREEN 3: STORY WORKSPACE ═════════ -->
+      <section id="view-story-workspace" class="screen-view">
+        <div style="display: grid; grid-template-columns: 320px 1fr; gap: 20px;">
+          <!-- Left: Structure & Episodes -->
+          <div class="glass" style="padding: 20px; border-radius: 18px; height: fit-content;">
+            <div style="font-size: 0.75rem; font-weight: 700; color: var(--gold); text-transform: uppercase; margin-bottom: 8px;">CÂU CHUYỆN CỦA DỰ ÁN</div>
+            <div id="story-project-title" style="font-size: 1.05rem; font-weight: 800; color: #f0f0ff; margin-bottom: 14px;">Chưa có nội dung</div>
+            
+            <div style="font-size:.76rem;font-weight:700;color:var(--gold);margin:12px 0 6px;">MÙA</div>
+            <div id="story-season-list" class="empty-state" style="padding:10px;">Đang tải mùa...</div>
+            <button onclick="createStorySeason()" class="btn btn-ghost" style="width:100%;margin-top:8px;padding:7px;font-size:.76rem;">+ Tạo mùa mới</button>
+
+            <div style="font-size:.76rem;font-weight:700;color:var(--gold);margin:16px 0 6px;">TẬP</div>
+            <div id="story-episode-list" class="empty-state" style="padding:16px;">Chưa có kịch bản. Hãy tạo ý tưởng trước.</div>
+            <button onclick="createStoryEpisode()" class="btn btn-ghost" style="width:100%;margin-top:10px;padding:8px;font-size:.8rem;">+ Tạo tập mới</button>
+
+            <div style="margin-top: 24px; padding-top: 16px; border-top: 1px solid var(--border);">
+              <div style="font-size: 0.75rem; font-weight: 700; color: var(--muted); text-transform: uppercase; margin-bottom: 8px;">CÔNG CỤ</div>
+              <button onclick="generateProjectScript()" class="btn btn-primary" style="width: 100%; justify-content: center; padding: 10px 12px; font-size: 0.82rem;">Tạo kịch bản và phân cảnh</button>
+            </div>
+          </div>
+
+          <!-- Right: Script Editor -->
+          <div class="glass" style="padding: 28px; border-radius: 18px;">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;">
+              <div>
+                <span style="font-size: 0.75rem; color: var(--muted); text-transform: uppercase;">BẢN THẢO KỊCH BẢN</span>
+                <h2 style="font-size: 1.3rem; font-weight: 800; color: #f0f0ff;">Kịch bản của dự án</h2>
+              </div>
+              <div style="display: flex; gap: 8px;">
+                <button onclick="generateProjectScript()" class="btn btn-ghost" style="padding: 8px 16px; font-size: 0.82rem;">Tạo kịch bản</button>
+                <div style="display:flex;gap:8px;">
+                  <button onclick="saveScreenplayFromUI()" class="btn btn-ghost" style="padding: 8px 16px; font-size: 0.82rem; color:#4ade80; border-color:rgba(74,222,128,0.4);" title="Lưu chỉnh sửa kịch bản vào cơ sở dữ liệu">💾 Lưu kịch bản</button>
+                  <button onclick="switchTab('scene-editor')" class="btn btn-primary" style="padding: 8px 16px; font-size: 0.82rem;">Xem phân cảnh →</button>
+                </div>
+              </div>
+            </div>
+
+            <!-- Screenplay box -->
+            <div id="story-screenplay-box" class="empty-state" contenteditable="true" title="Bấm vào để chỉnh sửa kịch bản trực tiếp" style="height:500px;overflow-y:auto;display:grid;place-items:center;">Kịch bản sẽ xuất hiện ở đây sau khi bạn tạo và lưu nội dung.</div>
+            <details style="margin-top:18px;border-top:1px solid var(--border);padding-top:14px;">
+              <summary style="cursor:pointer;color:#c4b5fd;font-weight:700;">Lịch sử các phiên bản AI</summary>
+              <div id="ai-generation-history" style="margin-top:10px;"></div>
+            </details>
+          </div>
+        </div>
+      </section>
+
+      <!-- ═════════ SCREEN 4: CHARACTER STUDIO ═════════ -->
+      <section id="view-character-studio" class="screen-view">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 24px;">
+          <div>
+            <div style="font-size: 0.75rem; font-weight: 700; color: var(--gold); text-transform: uppercase;">Character Memory &amp; Consistency</div>
+            <h1 style="font-size: 1.8rem; font-weight: 900; letter-spacing: -0.03em;">Hồ sơ nhân vật</h1>
+            <p style="color: var(--muted); font-size: 0.9rem; margin-top: 4px;">Lưu mô tả ngoại hình, tính cách và giọng đọc để giữ nhân vật nhất quán giữa các phân cảnh.</p>
+          </div>
+          <div style="display:flex;gap:10px;">
+            <button onclick="showAddCharacterDialog()" class="btn btn-primary" style="padding: 10px 18px; font-size: 0.88rem;">+ Thêm nhân vật</button>
+            <button onclick="switchTab('idea-builder')" class="btn btn-ghost" style="padding: 10px 16px; font-size: 0.88rem;">⚡ AI Sinh nhân vật</button>
+          </div>
+        </div>
+
+        <div id="character-cards-grid" style="display: grid; grid-template-columns: repeat(2, 1fr); gap: 20px;">
+          <!-- Character 1 -->
+          <div class="glass" style="padding: 24px; border-radius: 18px; border-top: 3px solid #5b52f0;">
+            <div style="display: flex; gap: 18px; align-items: flex-start; margin-bottom: 18px;">
+              <div style="width: 80px; height: 80px; border-radius: 16px; background: linear-gradient(135deg, #1e1b4b, #312e81); border: 2px solid rgba(139,92,246,0.4); display: flex; align-items: center; justify-content: center; font-size: 2.2rem; flex-shrink: 0;">🧑‍🔧</div>
+              <div style="flex: 1;">
+                <div style="display: flex; justify-content: space-between; align-items: center;">
+                  <h3 style="font-size: 1.25rem; font-weight: 800; color: #f0f0ff;">Kha (24 tuổi)</h3>
+                  <span class="status-badge badge-approved">Nhân vật chính</span>
+                </div>
+                <div style="font-size: 0.8rem; color: #a78bfa; margin-top: 2px;">Thợ sửa robot kiêm hacker tự do</div>
+                <div style="font-size: 0.85rem; color: var(--muted); margin-top: 8px; line-height: 1.6;">
+                  Tính cách: Thông minh, quyết đoán, giàu tình cảm, mang vết thương lòng về sự mất tích bí ẩn của mẹ.
+                </div>
+              </div>
+            </div>
+
+            <!-- Consistent Visual Prompt Box -->
+            <div style="background: rgba(0,0,0,0.3); border: 1px solid var(--border); border-radius: 12px; padding: 14px; margin-bottom: 14px;">
+              <div style="font-size: 0.72rem; font-weight: 700; color: var(--gold); text-transform: uppercase; margin-bottom: 4px;">Visual Prompt Nhất Quán (FLUX/SDXL Prompt)</div>
+              <div style="font-size: 0.8rem; color: #c4b5fd; font-family: monospace; line-height: 1.6;">
+                "Young Vietnamese cyberpunk mechanic, 24yo, messy dark hair, wearing weathered neon-glowing utility jacket, holding quantum spanner tool, intense determined eyes, Saigon 2088 rain backdrop, 8k cinematic lighting, masterwork"
+              </div>
+            </div>
+
+            <!-- Voice Profile -->
+            <div style="display: flex; justify-content: space-between; align-items: center; background: rgba(255,255,255,0.03); padding: 12px 16px; border-radius: 10px;">
+              <div>
+                <span style="font-size: 0.75rem; color: var(--muted);">Giọng đọc AI (Edge TTS):</span>
+                <span style="display: block; font-size: 0.85rem; font-weight: 700; color: #4ade80;">vi-VN-NamMinhNeural (Nam miền Bắc trầm ấm)</span>
+              </div>
+              <button disabled title="Chưa có API nghe thử giọng nhân vật độc lập." class="btn btn-ghost" style="padding: 6px 14px; font-size: 0.78rem;">Nghe thử (chưa hỗ trợ)</button>
+            </div>
+          </div>
+
+          <!-- Character 2 -->
+          <div class="glass" style="padding: 24px; border-radius: 18px; border-top: 3px solid #22d3ee;">
+            <div style="display: flex; gap: 18px; align-items: flex-start; margin-bottom: 18px;">
+              <div style="width: 80px; height: 80px; border-radius: 16px; background: linear-gradient(135deg, #083344, #164e63); border: 2px solid rgba(34,211,238,0.4); display: flex; align-items: center; justify-content: center; font-size: 2.2rem; flex-shrink: 0;">🤖</div>
+              <div style="flex: 1;">
+                <div style="display: flex; justify-content: space-between; align-items: center;">
+                  <h3 style="font-size: 1.25rem; font-weight: 800; color: #f0f0ff;">Mya (AI Companion)</h3>
+                  <span class="status-badge badge-generating">Đồng hành</span>
+                </div>
+                <div style="font-size: 0.8rem; color: #22d3ee; margin-top: 2px;">Trợ lý ảo dạng hình chiếu ba chiều</div>
+                <div style="font-size: 0.85rem; color: var(--muted); margin-top: 8px; line-height: 1.6;">
+                  Tính cách: Điềm tĩnh, phân tích dữ liệu siêu tốc, trung thành và bí mật che giấu một phần ký ức của người mẹ.
+                </div>
+              </div>
+            </div>
+
+            <!-- Consistent Visual Prompt Box -->
+            <div style="background: rgba(0,0,0,0.3); border: 1px solid var(--border); border-radius: 12px; padding: 14px; margin-bottom: 14px;">
+              <div style="font-size: 0.72rem; font-weight: 700; color: var(--gold); text-transform: uppercase; margin-bottom: 4px;">Visual Prompt Nhất Quán (FLUX/SDXL Prompt)</div>
+              <div style="font-size: 0.8rem; color: #67e8f9; font-family: monospace; line-height: 1.6;">
+                "Holographic female AI assistant, translucent cyan and lavender glowing form, ethereal aesthetic, kind facial expression, floating data rings, futuristic cyberpunk lab setting, octane render 8k"
+              </div>
+            </div>
+
+            <!-- Voice Profile -->
+            <div style="display: flex; justify-content: space-between; align-items: center; background: rgba(255,255,255,0.03); padding: 12px 16px; border-radius: 10px;">
+              <div>
+                <span style="font-size: 0.75rem; color: var(--muted);">Giọng đọc AI (Edge TTS):</span>
+                <span style="display: block; font-size: 0.85rem; font-weight: 700; color: #22d3ee;">vi-VN-HoaiMyNeural (Nữ miền Nam dịu dàng)</span>
+              </div>
+              <button disabled title="Chưa có API nghe thử giọng nhân vật độc lập." class="btn btn-ghost" style="padding: 6px 14px; font-size: 0.78rem;">Nghe thử (chưa hỗ trợ)</button>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ═════════ SCREEN 5: WORLD BUILDER ═════════ -->
+      <section id="view-world-builder" class="screen-view">
+        <div style="margin-bottom: 24px;">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
+            <div style="font-size: 0.75rem; font-weight: 700; color: var(--gold); text-transform: uppercase;">World Memory &amp; Lore Bible</div>
+            <div style="display:flex;gap:8px;">
+              <button onclick="showAddWorldItemDialog('rule')" class="btn btn-ghost" style="padding: 6px 14px; font-size: 0.78rem;">+ Thêm luật lệ</button>
+              <button onclick="showAddWorldItemDialog('faction')" class="btn btn-ghost" style="padding: 6px 14px; font-size: 0.78rem;">+ Thêm phe phái</button>
+              <button onclick="showAddWorldItemDialog('location')" class="btn btn-ghost" style="padding: 6px 14px; font-size: 0.78rem;">+ Thêm địa điểm</button>
+            </div>
+          </div>
+          <h1 style="font-size: 1.8rem; font-weight: 900; letter-spacing: -0.03em;">Bối cảnh câu chuyện</h1>
+          <p style="color: var(--muted); font-size: 0.9rem; margin-top: 4px;">Quy định phong cách thị giác, địa điểm, các phe phái và luật lệ để AI giữ tính nhất quán tuyệt đối giữa các tập phim.</p>
+        </div>
+
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 20px;">
+          <div class="glass" style="padding: 24px; border-radius: 18px;">
+            <h3 id="world-setting-title" style="font-size: 1.15rem; font-weight: 800; color: #f0f0ff; margin-bottom: 14px;">🏙️ Bối Cảnh Chính</h3>
+            <div id="world-setting-desc" style="font-size: 0.88rem; color: #cbd5e1; line-height: 1.7; margin-bottom: 16px;">
+              Năm 2088, do biến đổi khí hậu cực đoan, thành phố ngập chìm trong những cơn mưa axit và khói sương công nghiệp. Tầng không trung trên cao là những tòa nhà chọc trời hàng trăm tầng thuộc về giới tài phiệt NeuroCorp, đối lập với các khu chợ ngầm ẩm ướt đầy ánh đèn neon xanh đỏ.
+            </div>
+            <div style="background: rgba(0,0,0,0.3); border-radius: 12px; padding: 14px;">
+              <span style="font-size: 0.75rem; font-weight: 700; color: var(--gold); text-transform: uppercase;">Style Guide Thị Giác</span>
+              <div style="font-size: 0.82rem; color: #c4b5fd; margin-top: 6px;">Palette và mô tả thị giác do Creator cung cấp; chất lượng ảnh phụ thuộc provider đã cấu hình.</div>
+            </div>
+          </div>
+
+          <div class="glass" style="padding: 24px; border-radius: 18px;">
+            <h3 style="font-size: 1.15rem; font-weight: 800; color: #f0f0ff; margin-bottom: 14px;">⚖️ Quy Luật &amp; Phe Phái (Lore &amp; Rules)</h3>
+            <div id="world-rules-list" style="display: flex; flex-direction: column; gap: 10px;">
+              <div style="background: rgba(255,255,255,0.03); border: 1px solid var(--border); border-radius: 10px; padding: 12px;">
+                <div style="font-weight: 700; font-size: 0.85rem; color: #f87171;">Luật 1: Kiểm soát Ký ức</div>
+                <div style="font-size: 0.8rem; color: var(--muted); margin-top: 2px;">Mọi công dân bắt buộc sao lưu ký ức lên đám mây NeuroCorp hàng năm. Việc tự ý giải mã chip độc lập bị xử tử hình.</div>
+              </div>
+              <div style="background: rgba(255,255,255,0.03); border: 1px solid var(--border); border-radius: 10px; padding: 12px;">
+                <div style="font-weight: 700; font-size: 0.85rem; color: #60a5fa;">Phe Phái 1: Tập đoàn NeuroCorp</div>
+                <div style="font-size: 0.8rem; color: var(--muted); margin-top: 2px;">Kiểm soát độc quyền công nghệ robot sinh học, sở hữu lực lượng drone an ninh Guardian 24/7.</div>
+              </div>
+              <div style="background: rgba(255,255,255,0.03); border: 1px solid var(--border); border-radius: 10px; padding: 12px;">
+                <div style="font-weight: 700; font-size: 0.85rem; color: #4ade80;">Phe Phái 2: Hội Thợ Máy Tự Do</div>
+                <div style="font-size: 0.8rem; color: var(--muted); margin-top: 2px;">Cộng đồng ngầm dưới lòng đất chuyên phục hồi các robot cổ điển và bảo vệ dữ liệu độc lập.</div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ═════════ SCREEN 6: SCENE EDITOR ═════════ -->
+      <section id="view-scene-editor" class="screen-view">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
+          <div>
+            <div style="font-size: 0.75rem; font-weight: 700; color: var(--gold); text-transform: uppercase;">Biên tập chi tiết từng phân cảnh</div>
+            <h1 style="font-size: 1.8rem; font-weight: 900; letter-spacing: -0.03em;">Phân cảnh của dự án</h1>
+          </div>
+          <div style="display: flex; gap: 10px;">
+            <button onclick="switchTab('asset-library')" class="btn btn-ghost" style="padding: 8px 16px; font-size: 0.85rem;">Xem kho tư liệu →</button>
+            <button onclick="switchTab('video-preview')" class="btn btn-primary" style="padding: 8px 20px; font-size: 0.85rem;">Xem và xuất video</button>
+          </div>
+        </div>
+
+        <!-- 4 Scenes Cards -->
+        <div id="scene-cards-list" style="display: flex; flex-direction: column; gap: 16px;">
+          <!-- Scene 1 -->
+          <div class="glass" style="padding: 20px 24px; border-radius: 16px;">
+            <div style="display: grid; grid-template-columns: 140px 1fr auto; gap: 20px; align-items: center;">
+              <div style="width: 140px; height: 90px; border-radius: 10px; background: linear-gradient(135deg, #1e1b4b, #312e81); border: 1px solid var(--border); display: flex; align-items: center; justify-content: center; font-size: 1.8rem;">🌧️</div>
+              <div>
+                <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 4px;">
+                  <span style="font-weight: 800; font-size: 1rem; color: #f0f0ff;">Scene 01: Tiệm sửa chữa dưới mưa</span>
+                  <span class="status-badge badge-approved">Ảnh + Voice OK</span>
+                  <span style="font-size: 0.75rem; color: var(--muted);">18 giây · Góc: Wide Shot</span>
+                </div>
+                <div style="font-size: 0.85rem; color: #cbd5e1; margin-bottom: 6px;"><strong>Thoại (Kha):</strong> "Đêm nay lại có mưa axit. Bảng mạch của mày cháy khét lẹt thế này thì ai mà cứu nổi..."</div>
+                <div style="font-size: 0.78rem; color: #a78bfa; font-family: monospace;">Visual Prompt: "Cinematic shot of cozy futuristic workshop, neon reflections, rain on glass, 8k render"</div>
+              </div>
+              <div style="display: flex; flex-direction: column; gap: 6px;">
+                <button disabled title="Dữ liệu minh họa; hãy mở dự án để tạo và nghe tư liệu thật." class="btn btn-ghost" style="padding: 6px 12px; font-size: 0.78rem;">Nghe voice (chưa hỗ trợ)</button>
+                <button disabled title="Dữ liệu minh họa; hãy mở dự án để tạo và nghe tư liệu thật." class="btn btn-ghost" style="padding: 6px 12px; font-size: 0.78rem;">Tạo ảnh (chưa hỗ trợ)</button>
+              </div>
+            </div>
+          </div>
+
+          <!-- Scene 2 -->
+          <div class="glass" style="padding: 20px 24px; border-radius: 16px;">
+            <div style="display: grid; grid-template-columns: 140px 1fr auto; gap: 20px; align-items: center;">
+              <div style="width: 140px; height: 90px; border-radius: 10px; background: linear-gradient(135deg, #4c1d95, #6d28d9); border: 1px solid var(--border); display: flex; align-items: center; justify-content: center; font-size: 1.8rem;">💎</div>
+              <div>
+                <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 4px;">
+                  <span style="font-weight: 800; font-size: 1rem; color: #f0f0ff;">Scene 02: Phát hiện con chip phát sáng</span>
+                  <span class="status-badge badge-approved">Ảnh + Voice OK</span>
+                  <span style="font-size: 0.75rem; color: var(--muted);">15 giây · Góc: Extreme Close-up</span>
+                </div>
+                <div style="font-size: 0.85rem; color: #cbd5e1; margin-bottom: 6px;"><strong>Thoại (Kha):</strong> "Khoan đã... Đây không phải linh kiện thông thường. Chip ký ức này có khắc dấu ấn của mẹ!"</div>
+                <div style="font-size: 0.78rem; color: #a78bfa; font-family: monospace;">Visual Prompt: "Close-up robotic chest opening, glowing purple quantum chip emitting hologram"</div>
+              </div>
+              <div style="display: flex; flex-direction: column; gap: 6px;">
+                <button disabled title="Dữ liệu minh họa; hãy mở dự án để tạo và nghe tư liệu thật." class="btn btn-ghost" style="padding: 6px 12px; font-size: 0.78rem;">Nghe voice (chưa hỗ trợ)</button>
+                <button disabled title="Dữ liệu minh họa; hãy mở dự án để tạo và nghe tư liệu thật." class="btn btn-ghost" style="padding: 6px 12px; font-size: 0.78rem;">Tạo ảnh (chưa hỗ trợ)</button>
+              </div>
+            </div>
+          </div>
+
+          <!-- Scene 3 -->
+          <div class="glass" style="padding: 20px 24px; border-radius: 16px;">
+            <div style="display: grid; grid-template-columns: 140px 1fr auto; gap: 20px; align-items: center;">
+              <div style="width: 140px; height: 90px; border-radius: 10px; background: linear-gradient(135deg, #0e7490, #0891b2); border: 1px solid var(--border); display: flex; align-items: center; justify-content: center; font-size: 1.8rem;">🚨</div>
+              <div>
+                <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 4px;">
+                  <span style="font-weight: 800; font-size: 1rem; color: #f0f0ff;">Scene 03: Mya giải mã cảnh báo</span>
+                  <span class="status-badge badge-review">Chờ duyệt âm lượng</span>
+                  <span style="font-size: 0.75rem; color: var(--muted);">14 giây · Giọng: Mya (Nữ)</span>
+                </div>
+                <div style="font-size: 0.85rem; color: #cbd5e1; margin-bottom: 6px;"><strong>Thoại (Mya):</strong> "Cảnh báo mức độ tối mật! Con chip đang phát tín hiệu định vị lượng tử về NeuroCorp. Kha, anh phải rời khỏi đây ngay!"</div>
+                <div style="font-size: 0.78rem; color: #22d3ee; font-family: monospace;">Visual Prompt: "Holographic female AI with alarmed expression, pulsing red warning lights"</div>
+              </div>
+              <div style="display: flex; flex-direction: column; gap: 6px;">
+                <button disabled title="Dữ liệu minh họa; hãy mở dự án để tạo và nghe tư liệu thật." class="btn btn-ghost" style="padding: 6px 12px; font-size: 0.78rem;">Nghe voice (chưa hỗ trợ)</button>
+                <button disabled title="Dữ liệu minh họa; hãy mở dự án để tạo và nghe tư liệu thật." class="btn btn-ghost" style="padding: 6px 12px; font-size: 0.78rem;">Tạo ảnh (chưa hỗ trợ)</button>
+              </div>
+            </div>
+          </div>
+
+          <!-- Scene 4 -->
+          <div class="glass" style="padding: 20px 24px; border-radius: 16px;">
+            <div style="display: grid; grid-template-columns: 140px 1fr auto; gap: 20px; align-items: center;">
+              <div style="width: 140px; height: 90px; border-radius: 10px; background: linear-gradient(135deg, #991b1b, #dc2626); border: 1px solid var(--border); display: flex; align-items: center; justify-content: center; font-size: 1.8rem;">🛸</div>
+              <div>
+                <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 4px;">
+                  <span style="font-weight: 800; font-size: 1rem; color: #f0f0ff;">Scene 04: Drone phong tỏa lối thoát</span>
+                  <span class="status-badge badge-approved">Sẵn sàng dựng</span>
+                  <span style="font-size: 0.75rem; color: var(--muted);">16 giây · Cliffhanger kết tập</span>
+                </div>
+                <div style="font-size: 0.85rem; color: #cbd5e1; margin-bottom: 6px;"><strong>Thoại (Kha):</strong> "Quá muộn rồi. Drone trinh sát của NeuroCorp đã phong tỏa lối thoát duy nhất..."</div>
+                <div style="font-size: 0.78rem; color: #f87171; font-family: monospace;">Visual Prompt: "Sci-fi combat drones hovering outside neon alley, red spotlight beam locking on camera"</div>
+              </div>
+              <div style="display: flex; flex-direction: column; gap: 6px;">
+                <button disabled title="Dữ liệu minh họa; hãy mở dự án để tạo và nghe tư liệu thật." class="btn btn-ghost" style="padding: 6px 12px; font-size: 0.78rem;">Nghe voice (chưa hỗ trợ)</button>
+                <button disabled title="Dữ liệu minh họa; hãy mở dự án để tạo và nghe tư liệu thật." class="btn btn-ghost" style="padding: 6px 12px; font-size: 0.78rem;">Tạo ảnh (chưa hỗ trợ)</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ═════════ SCREEN 7: ASSET LIBRARY ═════════ -->
+      <section id="view-asset-library" class="screen-view">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 24px;">
+          <div>
+            <div style="font-size: 0.75rem; font-weight: 700; color: var(--gold); text-transform: uppercase;">Quản lý kho đa phương tiện</div>
+            <h1 style="font-size: 1.8rem; font-weight: 900; letter-spacing: -0.03em;">Kho ảnh, âm thanh và video</h1>
+            <p style="color: var(--muted); font-size: 0.9rem; margin-top: 4px;">Theo dõi trạng thái từng tư liệu: bản nháp, đang tạo, chờ duyệt, đã duyệt hoặc thất bại.</p>
+          </div>
+          <button disabled title="Upload Media chưa được triển khai" class="btn btn-ghost" style="padding: 9px 18px; font-size: 0.85rem;">Upload Media (chưa hỗ trợ)</button>
+        </div>
+
+        <!-- Filter tabs -->
+        <div id="asset-filter-bar" style="display: flex; gap: 10px; margin-bottom: 20px;">
+          <span style="color:var(--muted);font-size:.82rem;">Bộ lọc sẽ xuất hiện khi dự án có tư liệu.</span>
+        </div>
+
+        <!-- Grid of Assets -->
+        <div id="asset-grid" style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px;">
+          <!-- Asset 1 -->
+          <div class="glass" style="border-radius: 14px; overflow: hidden; padding: 16px;">
+            <div style="height: 140px; border-radius: 10px; background: linear-gradient(135deg, #1e1b4b, #312e81); display: flex; align-items: center; justify-content: center; font-size: 3rem; margin-bottom: 12px;">🌧️</div>
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
+              <span style="font-weight: 700; font-size: 0.9rem; color: #f0f0ff;">scene_01_workshop.png</span>
+              <span class="status-badge badge-approved">APPROVED</span>
+            </div>
+            <div style="font-size: 0.75rem; color: var(--muted);">Ảnh minh họa; cấu hình model phụ thuộc provider.</div>
+            <div style="font-size: 0.72rem; color: #a78bfa; margin-top: 6px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">Prompt: Cinematic shot of cozy futuristic workshop...</div>
+          </div>
+
+          <!-- Asset 2 -->
+          <div class="glass" style="border-radius: 14px; overflow: hidden; padding: 16px;">
+            <div style="height: 140px; border-radius: 10px; background: linear-gradient(135deg, #4c1d95, #6d28d9); display: flex; align-items: center; justify-content: center; font-size: 3rem; margin-bottom: 12px;">💎</div>
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
+              <span style="font-weight: 700; font-size: 0.9rem; color: #f0f0ff;">scene_02_chip_macro.png</span>
+              <span class="status-badge badge-approved">APPROVED</span>
+            </div>
+            <div style="font-size: 0.75rem; color: var(--muted);">Ảnh minh họa; cấu hình model phụ thuộc provider.</div>
+            <div style="font-size: 0.72rem; color: #a78bfa; margin-top: 6px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">Prompt: Close-up robotic chest opening, glowing chip...</div>
+          </div>
+
+          <!-- Asset 3 -->
+          <div class="glass" style="border-radius: 14px; overflow: hidden; padding: 16px;">
+            <div style="height: 140px; border-radius: 10px; background: linear-gradient(135deg, #064e3b, #047857); display: flex; align-items: center; justify-content: center; font-size: 3rem; margin-bottom: 12px;">🎙️</div>
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
+              <span style="font-weight: 700; font-size: 0.9rem; color: #f0f0ff;">voice_kha_scene01.mp3</span>
+              <span class="status-badge badge-approved">APPROVED</span>
+            </div>
+            <div style="font-size: 0.75rem; color: var(--muted);">Edge-TTS: vi-VN-NamMinhNeural · 18s</div>
+            <div style="font-size: 0.72rem; color: #4ade80; margin-top: 6px;">Thoại: "Đêm nay lại có mưa axit..."</div>
+          </div>
+
+          <!-- Asset 4 -->
+          <div class="glass" style="border-radius: 14px; overflow: hidden; padding: 16px;">
+            <div style="height: 140px; border-radius: 10px; background: linear-gradient(135deg, #164e63, #0891b2); display: flex; align-items: center; justify-content: center; font-size: 3rem; margin-bottom: 12px;">🎙️</div>
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
+              <span style="font-weight: 700; font-size: 0.9rem; color: #f0f0ff;">voice_mya_scene03.mp3</span>
+              <span class="status-badge badge-review">REVIEW</span>
+            </div>
+            <div style="font-size: 0.75rem; color: var(--muted);">Edge-TTS: vi-VN-HoaiMyNeural · 14s</div>
+            <div style="font-size: 0.72rem; color: #22d3ee; margin-top: 6px;">Thoại: "Cảnh báo mức độ tối mật..."</div>
+          </div>
+
+          <!-- Asset 5 -->
+          <div class="glass" style="border-radius: 14px; overflow: hidden; padding: 16px;">
+            <div style="height: 140px; border-radius: 10px; background: linear-gradient(135deg, #701a75, #a21caf); display: flex; align-items: center; justify-content: center; font-size: 3rem; margin-bottom: 12px;">🎞️</div>
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
+              <span style="font-weight: 700; font-size: 0.9rem; color: #f0f0ff;">video-minh-hoa-720p.mp4</span>
+              <span class="status-badge badge-approved">READY</span>
+            </div>
+            <div style="font-size: 0.75rem; color: var(--muted);">FFmpeg Pipeline · 63s · 24fps H.264</div>
+            <div style="font-size: 0.72rem; color: #f472b6; margin-top: 6px;">Ghép hoàn chỉnh 4 scenes + audio + sub</div>
+          </div>
+
+          <!-- Asset 6 -->
+          <div class="glass" style="border-radius: 14px; overflow: hidden; padding: 16px;">
+            <div style="height: 140px; border-radius: 10px; background: rgba(255,255,255,0.03); display: flex; align-items: center; justify-content: center; font-size: 3rem; margin-bottom: 12px; border: 1px dashed var(--border);">🔄</div>
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
+              <span style="font-weight: 700; font-size: 0.9rem; color: #f0f0ff;">scene_05_chase.png</span>
+              <span class="status-badge badge-generating">GENERATING</span>
+            </div>
+            <div style="font-size: 0.75rem; color: var(--muted);">Tác vụ media sẽ hiển thị khi được gửi từ Scene Editor.</div>
+            <div style="font-size: 0.72rem; color: var(--muted); margin-top: 6px;">Chưa có tác vụ đang chạy.</div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ═════════ SCREEN 8: VIDEO PREVIEW ═════════ -->
+      <section id="view-video-preview" class="screen-view">
+        <div style="display: grid; grid-template-columns: 1fr 340px; gap: 24px;">
+          <!-- Left: Video Player Mockup -->
+          <div>
+            <div class="glass" style="border-radius: 20px; overflow: hidden; padding: 20px; margin-bottom: 20px;">
+              <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px;">
+                <div style="display: flex; align-items: center; gap: 8px;">
+                  <span style="font-weight: 800; font-size: 1rem; color: #f0f0ff;">Trình xem trước video dự án</span>
+                  <span id="video-render-status" class="status-badge badge-draft">Chưa render</span>
+                </div>
+                <div style="display: flex; gap: 8px;">
+                  <span style="font-size: 0.75rem; color: #a78bfa; background: rgba(139,92,246,0.15); padding: 4px 10px; border-radius: 6px;">720p · 24fps</span>
+                  <span style="font-size: 0.75rem; color: #22d3ee; background: rgba(34,211,238,0.15); padding: 4px 10px; border-radius: 6px;">Thời lượng theo các cảnh</span>
+                </div>
+              </div>
+
+              <button onclick="renderProjectVideo()" class="btn btn-primary" style="margin-bottom:12px;padding:9px 16px;">Dựng video từ ảnh và âm thanh</button>
+              <video id="cinai-rendered-video" controls style="display:none;width:100%;aspect-ratio:16/9;background:#000;border-radius:12px;"></video>
+              <div id="video-preview-placeholder" style="padding:24px;text-align:center;color:var(--muted);">Chưa có video render. Mỗi cảnh cần có ảnh và giọng đọc trước khi render.</div>
+              <!-- Demo player kept hidden until a real render is available. -->
+              <div id="video-player-mock" hidden style="aspect-ratio: 16/9; background: #000; border-radius: 12px; position: relative; overflow: hidden; display: flex; align-items: center; justify-content: center; box-shadow: 0 10px 40px rgba(0,0,0,0.6);">
+                <div style="position: absolute; inset: 0; background: linear-gradient(135deg, #090919, #1a1636); opacity: 0.85;"></div>
+                
+                <!-- Dynamic scene visual simulation -->
+                <div style="position: relative; z-index: 2; text-align: center; padding: 20px;">
+                  <div style="font-size: 4rem; margin-bottom: 10px; animation: float 6s ease-in-out infinite;">🎬</div>
+                  <div style="font-size: 1.25rem; font-weight: 800; color: #fff;">Mắt Bão 2088 — Tập 1</div>
+                  <div style="font-size: 0.85rem; color: #c4b5fd; margin-top: 4px;">Đang phát Scene 02/04: Phát hiện con chip</div>
+                  
+                  <!-- Simulated Subtitle -->
+                  <div style="margin-top: 36px; background: rgba(0,0,0,0.75); padding: 8px 18px; border-radius: 8px; display: inline-block; font-size: 0.95rem; color: #fef08a; border: 1px solid rgba(255,255,255,0.1);">
+                    Kha: "Khoan đã... Đây không phải linh kiện thông thường. Chip ký ức này có khắc dấu ấn của mẹ!"
+                  </div>
+                </div>
+
+                <!-- Player Controls Overlay -->
+                <div style="position: absolute; bottom: 0; left: 0; right: 0; z-index: 3; background: linear-gradient(to top, rgba(0,0,0,0.9), transparent); padding: 16px 20px;">
+                  <div style="height: 4px; background: rgba(255,255,255,0.2); border-radius: 99px; margin-bottom: 12px; cursor: pointer; overflow: hidden;">
+                    <div style="width: 45%; height: 100%; background: linear-gradient(90deg, #5b52f0, #ec4899); border-radius: 99px;"></div>
+                  </div>
+                  <div style="display: flex; justify-content: space-between; align-items: center;">
+                    <div style="display: flex; align-items: center; gap: 14px;">
+                      <button disabled title="Chỉ là trình phát minh họa." style="background: none; border: none; color: #fff; font-size: 1.1rem;">▶ / ⏸</button>
+                      <span style="font-size: 0.78rem; color: #cbd5e1; font-family: monospace;">00:28 / 01:03</span>
+                      <span style="font-size: 0.75rem; color: #4ade80;">Scene 2</span>
+                    </div>
+                    <div style="display: flex; gap: 10px;">
+                      <button disabled title="Chỉ là trình phát minh họa." style="background: none; border: none; color: #fef08a; font-size: 0.8rem;">[CC] Phụ đề VI</button>
+                      <button disabled title="Chưa hỗ trợ chọn tỉ lệ khung hình." style="background: none; border: none; color: #cbd5e1; font-size: 0.8rem;">📱 9:16 TikTok</button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Timeline Tracks (FFmpeg visualization) -->
+            <div class="glass" hidden style="padding: 20px; border-radius: 16px;">
+              <div style="font-size: 0.8rem; font-weight: 700; color: var(--gold); margin-bottom: 12px; text-transform: uppercase;">Tracks Đa Phương Tiện (FFmpeg Layering)</div>
+              <div style="display: flex; flex-direction: column; gap: 8px; font-size: 0.78rem;">
+                <div style="display: grid; grid-template-columns: 100px 1fr; gap: 12px; align-items: center;">
+                  <span style="color: var(--muted); font-weight: 600;">Track 1: Images</span>
+                  <div style="display: flex; gap: 4px; height: 26px;">
+                    <div style="flex: 18; background: #312e81; border-radius: 4px; display: flex; align-items: center; justify-content: center; color: #c4b5fd;">SC1 (18s)</div>
+                    <div style="flex: 15; background: #581c87; border-radius: 4px; display: flex; align-items: center; justify-content: center; color: #e9d5ff;">SC2 (15s)</div>
+                    <div style="flex: 14; background: #155e75; border-radius: 4px; display: flex; align-items: center; justify-content: center; color: #cffafe;">SC3 (14s)</div>
+                    <div style="flex: 16; background: #7f1d1d; border-radius: 4px; display: flex; align-items: center; justify-content: center; color: #fecaca;">SC4 (16s)</div>
+                  </div>
+                </div>
+                <div style="display: grid; grid-template-columns: 100px 1fr; gap: 12px; align-items: center;">
+                  <span style="color: var(--muted); font-weight: 600;">Track 2: Voice TTS</span>
+                  <div style="display: flex; gap: 4px; height: 26px;">
+                    <div style="flex: 18; background: rgba(34,197,94,0.2); border: 1px solid rgba(34,197,94,0.4); border-radius: 4px; display: flex; align-items: center; justify-content: center; color: #4ade80;">NamMinh (16s)</div>
+                    <div style="flex: 15; background: rgba(34,197,94,0.2); border: 1px solid rgba(34,197,94,0.4); border-radius: 4px; display: flex; align-items: center; justify-content: center; color: #4ade80;">NamMinh (14s)</div>
+                    <div style="flex: 14; background: rgba(34,211,238,0.2); border: 1px solid rgba(34,211,238,0.4); border-radius: 4px; display: flex; align-items: center; justify-content: center; color: #22d3ee;">HoaiMy (13s)</div>
+                    <div style="flex: 16; background: rgba(34,197,94,0.2); border: 1px solid rgba(34,197,94,0.4); border-radius: 4px; display: flex; align-items: center; justify-content: center; color: #4ade80;">NamMinh (15s)</div>
+                  </div>
+                </div>
+                <div style="display: grid; grid-template-columns: 100px 1fr; gap: 12px; align-items: center;">
+                  <span style="color: var(--muted); font-weight: 600;">Track 3: Subtitles</span>
+                  <div style="background: rgba(234,179,8,0.15); border: 1px solid rgba(234,179,8,0.3); border-radius: 4px; height: 22px; display: flex; align-items: center; padding-left: 10px; color: #facc15;">
+                    Auto-generated Vietnamese Subtitles (.SRT sync 100%)
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Right: Export & Render Panel -->
+          <div class="glass" style="padding: 24px; border-radius: 20px; height: fit-content;">
+            <h3 style="font-size: 1.15rem; font-weight: 800; color: #f0f0ff; margin-bottom: 16px;">Xuất Bản Video</h3>
+            
+            <div style="margin-bottom: 16px;">
+              <label style="display: block; font-size: 0.78rem; color: var(--muted); margin-bottom: 6px;">ĐỘ PHÂN GIẢI (RESOLUTION)</label>
+              <select disabled style="width: 100%; background: rgba(255,255,255,0.06); border: 1px solid var(--border); border-radius: 10px; padding: 10px; color: #f0f0ff; font-size: 0.85rem; outline: none;">
+                <option>720p HD (định dạng hiện được hỗ trợ)</option>
+              </select>
+            </div>
+
+            <div style="margin-bottom: 20px;">
+              <label style="display: block; font-size: 0.78rem; color: var(--muted); margin-bottom: 6px;">TỈ LỆ KHUNG HÌNH (ASPECT RATIO)</label>
+              <select disabled style="width: 100%; background: rgba(255,255,255,0.06); border: 1px solid var(--border); border-radius: 10px; padding: 10px; color: #f0f0ff; font-size: 0.85rem; outline: none;">
+                <option>16:9 Ngang</option>
+              </select>
+            </div>
+
+            <div style="background: rgba(250,204,21,0.08); border: 1px solid rgba(250,204,21,0.25); border-radius: 12px; padding: 14px; margin-bottom: 20px;">
+              <div style="font-size: 0.75rem; font-weight: 700; color: #4ade80;">TIẾN ĐỘ RENDER FFMPEG</div>
+              <div style="font-size: 0.85rem; color: #f1f5f9; margin-top: 2px;">Trạng thái: <strong style="color: #facc15;">Chưa render</strong></div>
+              <div style="font-size: 0.72rem; color: var(--muted); margin-top: 4px;">Cần ảnh và audio đã duyệt cho mọi cảnh; cần cài FFmpeg.</div>
+            </div>
+
+            <a id="video-download-link" class="btn btn-primary" style="display:none;width:100%;padding:12px;font-size:.88rem;margin-bottom:10px;">
+              ⬇️ Tải Video MP4 (720p)
+            </a>
+            <a id="subtitle-download-link" class="btn btn-ghost" style="display:inline-flex;justify-content:center;width:100%;padding:10px;font-size:.85rem;text-decoration:none;" download>⬇️ Tải phụ đề SRT</a>
+          </div>
+        </div>
+      </section>
+
+      <!-- ═════════ SCREEN 9: ANALYTICS & AI RECOMMENDATION ═════════ -->
+      <section id="view-analytics" class="screen-view">
+        <div style="margin-bottom: 24px;">
+          <div style="font-size: 0.75rem; font-weight: 700; color: var(--gold); text-transform: uppercase;">SỐ LIỆU DO BẠN CUNG CẤP</div>
+          <h1 style="font-size: 1.8rem; font-weight: 900; letter-spacing: -0.03em;">Hiệu quả nội dung</h1>
+          <p style="color: var(--muted); font-size: 0.9rem; margin-top: 4px;">Nhập số liệu thủ công/CSV hoặc đồng bộ tài khoản đã kết nối khi cấu hình OAuth và quyền nền tảng cho phép.</p>
+        </div>
+
+        <!-- 3 Performance Cards -->
+        <div id="analytics-kpi-grid" style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; margin-bottom: 24px;">
+          <div class="empty-state" style="grid-column:1/-1;">Chưa có số liệu. Nhập số liệu thực tế bên dưới để xem thống kê.</div>
+        </div>
+
+        <!-- AI Recommendation Highlight Box (Syllabus Core) -->
+        <div class="glass" style="padding: 28px; border-radius: 20px; border-left: 4px solid var(--gold); margin-bottom: 24px; background: linear-gradient(135deg, rgba(201,168,76,0.06), rgba(91,82,240,0.06));">
+          <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 12px;">
+            <span style="font-size: 1.3rem;">🧠</span>
+            <h3 style="font-size: 1.2rem; font-weight: 800; color: #f0f0ff;">Gợi ý cải thiện nội dung</h3>
+            <span class="status-badge badge-draft" style="background: rgba(201,168,76,0.15); color: var(--gold); border-color: rgba(201,168,76,0.3);">Dựa trên số liệu đã lưu</span>
+          </div>
+          
+          <div id="analytics-recommendation-grid" class="analytics-recommendation-grid" style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; margin-top: 16px;">
+            <div class="empty-state" style="grid-column:1/-1;">Chưa có gợi ý. Hãy lưu số liệu trước, sau đó yêu cầu AI phân tích.</div>
+          </div>
+
+          <div style="margin-top: 20px; display: flex; gap: 12px;">
+            <button onclick="generateAnalyticsRecommendations()" class="btn btn-primary" style="padding: 10px 22px; font-size: 0.85rem;">🧠 Tạo gợi ý bằng AI đã chọn</button>
+            <button onclick="exportAnalytics()" class="btn btn-ghost" style="padding: 10px 18px; font-size: 0.85rem;">Tải số liệu CSV</button>
+          </div>
+        </div>
+      </section>
+
+    </div>
+  </main>
+</div>
+
+<script>
+function switchTab(tabId) {
+  // Update nav buttons
+  document.querySelectorAll('.nav-tab-btn').forEach(btn => {
+    btn.classList.remove('active');
+    btn.removeAttribute('aria-current');
+  });
+  const activeBtn = document.querySelector(`[onclick="switchTab('${tabId}')"]`);
+  if (activeBtn) {
+    activeBtn.classList.add('active');
+    activeBtn.setAttribute('aria-current', 'page');
+  }
+
+  // Update views
+  document.querySelectorAll('.screen-view').forEach(view => view.classList.remove('active'));
+  const targetView = document.getElementById(`view-${tabId}`);
+  if (targetView) targetView.classList.add('active');
+  loadScreenData(tabId);
+}
+
+function prepareEmptyStudioViews() {
+  const setEmpty = (id, message) => {
+    const element = document.getElementById(id);
+    if (element) element.innerHTML = `<div class="empty-state" style="grid-column:1/-1;">${message}</div>`;
+  };
+  setEmpty('character-cards-grid', 'Chưa có hồ sơ nhân vật. Tạo ý tưởng và kịch bản trước để thêm nhân vật.');
+  setEmpty('scene-cards-list', 'Chưa có phân cảnh. Tạo kịch bản trước để chia câu chuyện thành các cảnh.');
+  setEmpty('asset-grid', 'Chưa có tư liệu. Tạo ảnh hoặc giọng đọc từ phần Phân cảnh.');
+  const filterBar = document.getElementById('asset-filter-bar');
+  if (filterBar) filterBar.innerHTML = '<span style="color:var(--muted);font-size:.82rem;">Bộ lọc sẽ xuất hiện khi dự án có tư liệu.</span>';
+  const recGrid = document.getElementById('analytics-recommendation-grid');
+  if (recGrid) recGrid.innerHTML = '<div class="empty-state" style="grid-column:1/-1;">Chưa có gợi ý. Lưu số liệu thực tế trước rồi yêu cầu AI phân tích.</div>';
+  const worldTitle = document.getElementById('world-setting-title');
+  const worldDescription = document.getElementById('world-setting-desc');
+  const worldRules = document.getElementById('world-rules-list');
+  if (worldTitle) worldTitle.textContent = 'Chưa có bối cảnh';
+  if (worldDescription) worldDescription.textContent = 'Tạo ý tưởng và hồ sơ câu chuyện để lưu thông tin bối cảnh tại đây.';
+  if (worldRules) worldRules.innerHTML = '<div class="empty-state">Chưa có luật lệ, phe phái hoặc địa điểm được lưu.</div>';
+  const styleGuide = document.querySelector('#view-world-builder .glass [style*="background: rgba(0,0,0,0.3)"]');
+  if (styleGuide) styleGuide.innerHTML = '<span style="font-size:.75rem;font-weight:700;color:var(--gold);text-transform:uppercase;">Phong cách hình ảnh</span><div style="font-size:.82rem;color:var(--muted);margin-top:6px;">Chưa có hướng dẫn phong cách được lưu.</div>';
+}
+
+prepareEmptyStudioViews();
+
+// Check URL query param or hash for default tab (e.g. studio.html?tab=scene-editor or studio.html#scene-editor)
+window.addEventListener('DOMContentLoaded', () => {
+  const urlParams = new URLSearchParams(window.location.search);
+  if (urlParams.get('auth') === 'login') showAuthDialog();
+  initializeWorkspace()
+    .catch(() => showAuthDialog());
+  let tab = urlParams.get('tab');
+  if (!tab && window.location.hash) {
+    tab = window.location.hash.replace('#', '').replace('tab-', '');
+  }
+  if (tab && document.getElementById(`view-${tab}`)) {
+    switchTab(tab);
+  }
+});
+</script>
+
+</body>
+</html>

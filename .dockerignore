@@ -1,0 +1,16 @@
+.git
+.env
+**/.env
+!**/.env.example
+.venv
+backend/.venv
+backend/__pycache__
+backend/**/__pycache__
+backend/.env
+backend/cinai.db
+backend/storage
+storage
+*.sqlite
+*.sqlite3
+*.pyc
+__pycache__

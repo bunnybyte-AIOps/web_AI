@@ -1,0 +1,749 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>CINAI — AI Film Co-Creation Platform</title>
+  <script src="https://www.gstatic.com/antigravity/web/dev/tailwindcss.min.js"></script>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --gold: #c9a84c;
+      --gold-light: #e8c96a;
+      --indigo: #5b52f0;
+      --violet: #8b5cf6;
+      --rose: #fb7185;
+      --cyan: #22d3ee;
+      --ink: #06060f;
+      --ink2: #0d0d1e;
+      --surface: rgba(255,255,255,0.032);
+      --border: rgba(255,255,255,0.07);
+      --text: #f0f0ff;
+      --muted: #7878a3;
+    }
+
+    html { scroll-behavior: smooth; }
+
+    body {
+      font-family: system-ui, -apple-system, 'Segoe UI', sans-serif;
+      background: var(--ink);
+      color: var(--text);
+      overflow-x: hidden;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    #aurora-canvas {
+      position: fixed; inset: 0; z-index: 0; pointer-events: none;
+    }
+
+    body::before {
+      content: '';
+      position: fixed; inset: 0; z-index: 1; pointer-events: none;
+      opacity: 0.028;
+      background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 512 512' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.75' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+      background-size: 200px 200px;
+    }
+
+    .display {
+      font-size: clamp(3rem, 7.5vw, 5.8rem);
+      font-weight: 900;
+      line-height: 0.95;
+      letter-spacing: -0.04em;
+    }
+    .display-sm {
+      font-size: clamp(2rem, 4.5vw, 3.6rem);
+      font-weight: 800;
+      letter-spacing: -0.035em;
+      line-height: 1.05;
+    }
+
+    .gt-gold {
+      background: linear-gradient(125deg, #e8c96a 0%, #c9a84c 40%, #a07830 100%);
+      -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text;
+    }
+    .gt-main {
+      background: linear-gradient(125deg, #818cf8 0%, #a78bfa 35%, #fb7185 70%, #fbbf24 100%);
+      -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text;
+    }
+    .gt-cool {
+      background: linear-gradient(125deg, #22d3ee 0%, #818cf8 60%, #c084fc 100%);
+      -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text;
+    }
+
+    .btn { display: inline-flex; align-items: center; justify-content: center; gap: 8px; font-weight: 700; letter-spacing: -0.01em; cursor: pointer; border: none; transition: all 0.35s cubic-bezier(0.25, 0.8, 0.25, 1); position: relative; overflow: hidden; text-decoration: none; }
+    .btn-hero { padding: 17px 40px; border-radius: 14px; font-size: 1.05rem; color: #fff; background: linear-gradient(135deg, #5b52f0, #8b5cf6, #fb7185); box-shadow: 0 0 0 1px rgba(139,92,246,.3), 0 20px 60px rgba(91,82,240,.35); }
+    .btn-hero::before { content: ''; position: absolute; inset: 0; background: linear-gradient(135deg, #7c75f5, #a78bfa, #fc8fa3); opacity: 0; transition: opacity 0.35s; }
+    .btn-hero:hover::before { opacity: 1; }
+    .btn-hero:hover { transform: translateY(-3px); box-shadow: 0 0 0 1px rgba(139,92,246,.4), 0 30px 80px rgba(91,82,240,.5); }
+    .btn-ghost { padding: 17px 36px; border-radius: 14px; font-size: 1.05rem; color: var(--muted); background: transparent; border: 1px solid var(--border); }
+    .btn-ghost:hover { color: var(--text); border-color: rgba(255,255,255,.2); background: var(--surface); }
+    .btn-gold { padding: 15px 36px; border-radius: 12px; font-size: .95rem; color: #0a0812; background: linear-gradient(135deg, #e8c96a, #c9a84c, #a07830); box-shadow: 0 8px 40px rgba(201,168,76,.3); }
+    .btn-gold:hover { transform: translateY(-2px); box-shadow: 0 14px 50px rgba(201,168,76,.45); }
+
+    #nav { position: fixed; top: 0; left: 0; right: 0; z-index: 200; transition: all 0.4s; }
+    #nav.scrolled { background: rgba(6,6,15,0.85); backdrop-filter: blur(24px) saturate(180%); border-bottom: 1px solid var(--border); }
+    .nav-inner { max-width: 1280px; margin: 0 auto; padding: 22px 32px; display: flex; align-items: center; justify-content: space-between; }
+    .logo { display: flex; align-items: center; gap: 12px; text-decoration: none; }
+    .logo-mark { width: 40px; height: 40px; border-radius: 12px; position: relative; overflow: hidden; background: linear-gradient(135deg, #5b52f0, #8b5cf6); display: flex; align-items: center; justify-content: center; box-shadow: 0 0 20px rgba(91,82,240,.5); }
+    .logo-mark::after { content: ''; position: absolute; inset: 0; background: linear-gradient(135deg, transparent, rgba(255,255,255,.15)); }
+    .logo-name { font-size: 1.4rem; font-weight: 900; letter-spacing: -0.05em; background: linear-gradient(135deg, #fff, rgba(255,255,255,.6)); -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text; }
+    .nav-links { display: flex; gap: 36px; }
+    .nav-link { font-size: .875rem; font-weight: 500; color: var(--muted); text-decoration: none; transition: color .25s; letter-spacing: .01em; }
+    .nav-link:hover { color: var(--text); }
+    .nav-cta { display: flex; gap: 12px; align-items: center; }
+
+    #hero { position: relative; z-index: 2; min-height: 100vh; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 160px 32px 100px; text-align: center; overflow: hidden; }
+
+    .filmstrip { position: absolute; left: 0; right: 0; height: 48px; display: flex; gap: 6px; align-items: center; overflow: hidden; opacity: 0.12; pointer-events: none; }
+    .filmstrip-hole { width: 20px; height: 30px; border-radius: 5px; background: rgba(255,255,255,.8); flex-shrink: 0; }
+    .filmstrip-frame { width: 70px; height: 44px; border-radius: 3px; background: rgba(255,255,255,.04); border: 1px solid rgba(255,255,255,.15); flex-shrink: 0; }
+
+    .eyebrow { display: inline-flex; align-items: center; gap: 10px; padding: 8px 20px; border-radius: 999px; font-size: .82rem; font-weight: 600; background: linear-gradient(135deg, rgba(91,82,240,.12), rgba(139,92,246,.08)); border: 1px solid rgba(139,92,246,.25); color: #a78bfa; letter-spacing: .04em; text-transform: uppercase; margin-bottom: 36px; }
+    .eyebrow-dot { width: 6px; height: 6px; border-radius: 50%; background: #8b5cf6; animation: pulse-dot 2s ease-in-out infinite; }
+    @keyframes pulse-dot { 0%,100% { opacity: 1; transform: scale(1); } 50% { opacity: .5; transform: scale(1.5); } }
+
+    .hero-card { position: absolute; border-radius: 16px; padding: 16px 20px; background: rgba(255,255,255,.04); border: 1px solid rgba(255,255,255,.1); backdrop-filter: blur(20px); animation: float-card 6s ease-in-out infinite; pointer-events: none; }
+    @keyframes float-card { 0%,100% { transform: translateY(0) rotate(var(--r,0deg)); } 50% { transform: translateY(-16px) rotate(var(--r,0deg)); } }
+
+    .section { position: relative; z-index: 2; padding: 120px 32px; }
+    .container { max-width: 1280px; margin: 0 auto; }
+    .container-sm { max-width: 840px; margin: 0 auto; }
+
+    .s-label { display: inline-flex; align-items: center; gap: 8px; font-size: .75rem; font-weight: 700; letter-spacing: .12em; text-transform: uppercase; color: var(--gold); margin-bottom: 20px; }
+    .s-label::before { content: ''; display: block; width: 24px; height: 1px; background: var(--gold); opacity: .7; }
+
+    .feat-card { position: relative; border-radius: 20px; padding: 32px; background: var(--surface); border: 1px solid var(--border); transition: all 0.5s cubic-bezier(0.25, 0.8, 0.25, 1); overflow: hidden; cursor: default; }
+    .feat-card::before { content: ''; position: absolute; inset: 0; border-radius: 20px; opacity: 0; background: radial-gradient(600px circle at var(--mx,50%) var(--my,50%), rgba(139,92,246,.08), transparent 60%); transition: opacity .4s; }
+    .feat-card:hover::before { opacity: 1; }
+    .feat-card::after { content: ''; position: absolute; inset: -1px; border-radius: 21px; opacity: 0; z-index: -1; background: linear-gradient(135deg, rgba(91,82,240,.4), rgba(139,92,246,.2), rgba(251,113,133,.2)); transition: opacity .5s; }
+    .feat-card:hover::after { opacity: 1; }
+    .feat-card:hover { transform: translateY(-6px); background: rgba(255,255,255,.055); }
+
+    .feat-icon { width: 56px; height: 56px; border-radius: 16px; margin-bottom: 24px; display: flex; align-items: center; justify-content: center; font-size: 1.4rem; position: relative; overflow: hidden; }
+    .feat-icon::after { content: ''; position: absolute; inset: 0; background: linear-gradient(135deg, transparent 40%, rgba(255,255,255,.12)); }
+    .feat-title { font-size: 1.1rem; font-weight: 700; letter-spacing: -0.02em; color: #e8e8f8; margin-bottom: 12px; }
+    .feat-desc { font-size: .875rem; color: var(--muted); line-height: 1.75; }
+
+    .chip { display: inline-flex; align-items: center; padding: 3px 12px; border-radius: 999px; font-size: .72rem; font-weight: 600; letter-spacing: .03em; border: 1px solid; margin: 4px 3px 0; }
+    .chip-v { color: #c4b5fd; border-color: rgba(196,181,253,.2); background: rgba(196,181,253,.06); }
+    .chip-g { color: #86efac; border-color: rgba(134,239,172,.2); background: rgba(134,239,172,.06); }
+    .chip-b { color: #93c5fd; border-color: rgba(147,197,253,.2); background: rgba(147,197,253,.06); }
+    .chip-o { color: #fcd34d; border-color: rgba(252,211,77,.2); background: rgba(252,211,77,.06); }
+    .chip-r { color: #fca5a5; border-color: rgba(252,165,165,.2); background: rgba(252,165,165,.06); }
+
+    .step { display: grid; grid-template-columns: 64px 1fr; gap: 28px; align-items: start; position: relative; }
+    .step:not(:last-child) .step-line { position: absolute; left: 31px; top: 64px; bottom: -32px; width: 2px; background: linear-gradient(to bottom, rgba(91,82,240,.4), rgba(139,92,246,.1)); }
+    .step-num { width: 64px; height: 64px; border-radius: 18px; flex-shrink: 0; display: flex; align-items: center; justify-content: center; font-size: 1.25rem; font-weight: 900; position: relative; overflow: hidden; }
+    .step-num::after { content: ''; position: absolute; inset: 0; background: linear-gradient(135deg, transparent, rgba(255,255,255,.12)); }
+    .step-body { padding-bottom: 48px; }
+    .step-title { font-size: 1.2rem; font-weight: 700; letter-spacing: -0.02em; color: #e8e8f8; margin-bottom: 10px; }
+    .step-desc { font-size: .9rem; color: var(--muted); line-height: 1.75; }
+
+    .testimonial-track { display: flex; gap: 20px; transition: transform 0.7s cubic-bezier(0.4,0,0.2,1); }
+    .testimonial-card { min-width: 380px; border-radius: 20px; padding: 32px; background: var(--surface); border: 1px solid var(--border); flex-shrink: 0; }
+    .stars { color: var(--gold); font-size: 1rem; letter-spacing: 2px; margin-bottom: 16px; }
+    .t-quote { font-size: .95rem; color: #c8c8e8; line-height: 1.8; margin-bottom: 24px; font-style: italic; }
+    .t-avatar { width: 44px; height: 44px; border-radius: 50%; overflow: hidden; display: flex; align-items: center; justify-content: center; font-size: 1.3rem; flex-shrink: 0; }
+
+    .price-card { border-radius: 24px; padding: 36px; background: var(--surface); border: 1px solid var(--border); position: relative; overflow: hidden; transition: transform 0.4s cubic-bezier(0.25,0.8,0.25,1); }
+    .price-card:hover { transform: translateY(-8px); }
+    .price-card.best { background: linear-gradient(145deg, rgba(91,82,240,.12), rgba(139,92,246,.1), rgba(251,113,133,.06)); border-color: rgba(139,92,246,.4); box-shadow: 0 0 80px rgba(91,82,240,.18), 0 0 0 1px rgba(139,92,246,.25); }
+    .price-card.best::before { content: ''; position: absolute; top: 0; left: 0; right: 0; height: 2px; background: linear-gradient(90deg, #5b52f0, #8b5cf6, #fb7185); }
+    .price-badge { display: inline-block; padding: 4px 16px; border-radius: 999px; font-size: .72rem; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; background: linear-gradient(135deg, #5b52f0, #8b5cf6); color: #fff; margin-bottom: 20px; }
+    .price-val { font-size: 3.2rem; font-weight: 900; letter-spacing: -0.04em; line-height: 1; }
+    .price-period { font-size: .85rem; color: var(--muted); margin-top: 4px; }
+    .price-divider { height: 1px; background: var(--border); margin: 28px 0; }
+    .price-feature { display: flex; align-items: center; gap: 12px; font-size: .875rem; color: #c8c8e8; padding: 8px 0; }
+    .pf-check { width: 20px; height: 20px; border-radius: 6px; display: flex; align-items: center; justify-content: center; flex-shrink: 0; font-size: .75rem; }
+    .pf-check.on { background: rgba(91,82,240,.2); color: #a78bfa; }
+    .pf-check.off { background: rgba(255,255,255,.04); color: var(--muted); }
+    .pricing-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 20px; align-items: stretch; }
+    .pricing-grid .price-card { display: flex; flex-direction: column; }
+    .pricing-grid .price-features { flex: 1; }
+    .pricing-note { margin-top: 18px; color: var(--muted); font-size: .82rem; line-height: 1.65; }
+    @media (max-width: 800px) {
+      .pricing-grid { grid-template-columns: 1fr; max-width: 560px; margin: 0 auto; }
+      .section#pricing { padding: 80px 20px; }
+      .nav-inner { padding: 14px 20px; }
+      .nav-links { display: none; }
+    }
+    @media (max-width: 520px) {
+      .nav-inner { padding: 12px 16px; }
+      .nav-cta .btn-ghost { display: none; }
+      .nav-cta .btn-hero { padding: 10px 16px !important; font-size: .82rem !important; }
+    }
+
+    .faq { border-radius: 16px; overflow: hidden; border: 1px solid var(--border); background: var(--surface); transition: border-color .3s; }
+    .faq:hover { border-color: rgba(139,92,246,.3); }
+    .faq summary { padding: 22px 28px; cursor: pointer; list-style: none; display: flex; justify-content: space-between; align-items: center; font-weight: 600; font-size: .95rem; color: #e0e0f8; user-select: none; }
+    .faq summary::-webkit-details-marker { display: none; }
+    .faq-plus { width: 28px; height: 28px; border-radius: 8px; flex-shrink: 0; background: rgba(139,92,246,.12); border: 1px solid rgba(139,92,246,.2); display: flex; align-items: center; justify-content: center; color: #a78bfa; font-size: 1.1rem; font-weight: 400; transition: transform .3s, background .3s; }
+    .faq[open] .faq-plus { transform: rotate(45deg); background: rgba(139,92,246,.2); }
+    .faq-body { padding: 0 28px 22px; font-size: .875rem; color: var(--muted); line-height: 1.8; border-top: 1px solid var(--border); padding-top: 16px; }
+
+    .cta-section { position: relative; z-index: 2; padding: 140px 32px; text-align: center; overflow: hidden; }
+    .cta-bg { position: absolute; inset: 0; z-index: 0; pointer-events: none; background: radial-gradient(ellipse 80% 60% at 50% 50%, rgba(91,82,240,.18) 0%, transparent 70%), radial-gradient(ellipse 40% 40% at 30% 60%, rgba(139,92,246,.1) 0%, transparent 60%), radial-gradient(ellipse 40% 40% at 70% 40%, rgba(251,113,133,.08) 0%, transparent 60%); }
+
+    .reveal { opacity: 0; transform: translateY(28px); transition: opacity .8s cubic-bezier(0.4,0,0.2,1), transform .8s cubic-bezier(0.4,0,0.2,1); }
+    .reveal.up { opacity: 1; transform: translateY(0); }
+    .reveal-delay-1 { transition-delay: .1s; }
+    .reveal-delay-2 { transition-delay: .2s; }
+    .reveal-delay-3 { transition-delay: .3s; }
+    .reveal-delay-4 { transition-delay: .4s; }
+
+    .stat-val { font-size: 3rem; font-weight: 900; letter-spacing: -0.04em; line-height: 1; }
+    .stat-label { font-size: .82rem; color: var(--muted); margin-top: 6px; letter-spacing: .02em; }
+
+    .divider { height: 1px; width: 100%; background: linear-gradient(90deg, transparent, var(--border) 30%, var(--border) 70%, transparent); }
+
+    ::-webkit-scrollbar { width: 5px; }
+    ::-webkit-scrollbar-track { background: var(--ink); }
+    ::-webkit-scrollbar-thumb { background: linear-gradient(#5b52f0, #8b5cf6); border-radius: 99px; }
+
+    .terminal { border-radius: 16px; background: rgba(8,8,20,.85); overflow: hidden; border: 1px solid rgba(255,255,255,.09); backdrop-filter: blur(24px); }
+    .terminal-bar { padding: 14px 20px; border-bottom: 1px solid rgba(255,255,255,.06); display: flex; align-items: center; gap: 8px; background: rgba(255,255,255,.02); }
+    .tb-dot { width: 11px; height: 11px; border-radius: 50%; }
+    .terminal-body { padding: 24px; }
+
+    .wave-bar { width: 4px; border-radius: 99px; background: linear-gradient(to top, #5b52f0, #a78bfa); animation: wave 1.2s ease-in-out infinite; }
+    @keyframes wave { 0%,100% { transform: scaleY(0.3); } 50% { transform: scaleY(1); } }
+
+    @keyframes shine { from { background-position: -200% center; } to { background-position: 200% center; } }
+    .text-shine { background: linear-gradient(90deg, #e8c96a 25%, #fff 50%, #e8c96a 75%); background-size: 200% auto; -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text; animation: shine 4s linear infinite; }
+
+    @keyframes float-card { 0%,100% { transform: translateY(0) rotate(var(--r,0deg)); } 50% { transform: translateY(-16px) rotate(var(--r,0deg)); } }
+  </style>
+  <style>
+    html.cinai-studio-route, html.cinai-studio-route body { height: 100%; overflow: hidden; }
+    html.cinai-studio-route #cinai-landing-page { display: none; }
+    #cinai-studio-frame { display: none; position: fixed; inset: 0; width: 100%; height: 100%; border: 0; background: var(--ink); z-index: 9999; }
+    html.cinai-studio-route #cinai-studio-frame { display: block; }
+  </style>
+  <script>
+    function updateStudioRoute() {
+      const path = window.location.pathname.replace(/\/+$/, '');
+      const isStudioRoute = path === '/studio' || window.location.hash === '#studio';
+      document.documentElement.classList.toggle('cinai-studio-route', isStudioRoute);
+      if (isStudioRoute && window.location.protocol === 'file:') {
+        const appUrl = new URL('http://127.0.0.1:8000/');
+        appUrl.search = window.location.search;
+        appUrl.hash = window.location.hash;
+        window.location.replace(appUrl.href);
+        return;
+      }
+      const studioFrame = document.getElementById('cinai-studio-frame');
+      if (isStudioRoute && studioFrame) {
+        const studioUrl = new URL('studio.html', window.location.href);
+        studioUrl.search = window.location.search;
+        if (studioFrame.src !== studioUrl.href) studioFrame.src = studioUrl.href;
+      }
+    }
+
+    updateStudioRoute();
+    window.addEventListener('hashchange', updateStudioRoute);
+  </script>
+</head>
+<body>
+<div id="cinai-landing-page">
+
+<canvas id="aurora-canvas"></canvas>
+
+<!-- NAV -->
+<nav id="nav">
+  <div class="nav-inner">
+    <a class="logo" href="/#hero">
+      <div class="logo-mark"><span style="font-size:1.2rem;position:relative;z-index:1;">🎬</span></div>
+      <span class="logo-name">CINAI</span>
+    </a>
+    <div class="nav-links">
+      <a class="nav-link" href="#features">Tính năng</a>
+      <a class="nav-link" href="#workflow">Quy trình</a>
+      <a class="nav-link" href="#showcase">Showcase</a>
+      <a class="nav-link" href="#pricing">Bảng giá</a>
+    </div>
+    <div class="nav-cta">
+      <a href="/?auth=login#studio" class="btn btn-ghost" style="padding:10px 22px;border-radius:10px;font-size:.875rem;">Đăng nhập</a>
+      <a href="/#studio" class="btn btn-hero" style="padding:10px 22px;border-radius:10px;font-size:.875rem;"><span style="position:relative;z-index:1;">Dùng miễn phí →</span></a>
+    </div>
+  </div>
+</nav>
+
+<!-- HERO -->
+<section id="hero">
+  <div class="filmstrip" style="top:90px;">
+    <div class="filmstrip-hole"></div><div class="filmstrip-frame"></div><div class="filmstrip-hole"></div><div class="filmstrip-frame"></div><div class="filmstrip-hole"></div><div class="filmstrip-frame"></div><div class="filmstrip-hole"></div><div class="filmstrip-frame"></div><div class="filmstrip-hole"></div><div class="filmstrip-frame"></div><div class="filmstrip-hole"></div><div class="filmstrip-frame"></div><div class="filmstrip-hole"></div><div class="filmstrip-frame"></div><div class="filmstrip-hole"></div><div class="filmstrip-frame"></div><div class="filmstrip-hole"></div><div class="filmstrip-frame"></div><div class="filmstrip-hole"></div><div class="filmstrip-frame"></div><div class="filmstrip-hole"></div><div class="filmstrip-frame"></div><div class="filmstrip-hole"></div><div class="filmstrip-frame"></div><div class="filmstrip-hole"></div><div class="filmstrip-frame"></div><div class="filmstrip-hole"></div><div class="filmstrip-frame"></div><div class="filmstrip-hole"></div><div class="filmstrip-frame"></div>
+  </div>
+
+  <!-- Floating cards -->
+  <div class="hero-card" style="left:4%;top:28%;--r:-6deg;animation-delay:0s;min-width:200px;">
+    <div style="font-size:.72rem;color:var(--muted);font-weight:700;letter-spacing:.06em;text-transform:uppercase;margin-bottom:10px;">AI Script</div>
+    <div style="font-size:.82rem;color:#c8c8e8;line-height:1.6;">"Cảnh rừng đêm,<br/>nhân vật chính<br/>phát hiện bí mật..."</div>
+    <div style="margin-top:10px;display:flex;align-items:center;gap:6px;">
+      <div style="width:6px;height:6px;border-radius:50%;background:#22c55e;animation:pulse-dot 1.5s infinite;"></div>
+      <span style="font-size:.72rem;color:#22c55e;font-weight:600;">Đang viết...</span>
+    </div>
+  </div>
+
+  <div class="hero-card" style="right:4%;top:32%;--r:5deg;animation-delay:2.5s;min-width:180px;">
+    <div style="font-size:.72rem;color:var(--muted);font-weight:700;margin-bottom:10px;letter-spacing:.06em;text-transform:uppercase;">Voice Render</div>
+    <div style="display:flex;align-items:flex-end;gap:4px;height:40px;margin-bottom:8px;">
+      <div class="wave-bar" style="height:60%;animation-delay:0s;"></div>
+      <div class="wave-bar" style="height:100%;animation-delay:.15s;"></div>
+      <div class="wave-bar" style="height:45%;animation-delay:.3s;"></div>
+      <div class="wave-bar" style="height:80%;animation-delay:.45s;"></div>
+      <div class="wave-bar" style="height:55%;animation-delay:.6s;"></div>
+      <div class="wave-bar" style="height:90%;animation-delay:.75s;"></div>
+      <div class="wave-bar" style="height:40%;animation-delay:.9s;"></div>
+      <div class="wave-bar" style="height:70%;animation-delay:1.05s;"></div>
+    </div>
+    <div style="font-size:.78rem;color:#a78bfa;font-weight:600;">Bản minh họa giao diện</div>
+  </div>
+
+  <div class="hero-card" style="left:2%;bottom:22%;--r:4deg;animation-delay:1.5s;min-width:170px;">
+    <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
+      <div style="width:32px;height:32px;border-radius:8px;background:linear-gradient(135deg,#c9a84c,#e8c96a);display:flex;align-items:center;justify-content:center;font-size:.9rem;">🏆</div>
+      <div>
+        <div style="font-size:.78rem;font-weight:700;color:#f0f0ff;">Bản minh họa</div>
+        <div style="font-size:.68rem;color:var(--muted);">Analytics</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="hero-card" style="right:3%;bottom:24%;--r:-4deg;animation-delay:3.5s;min-width:160px;">
+    <div style="font-size:.72rem;color:var(--muted);font-weight:700;margin-bottom:8px;text-transform:uppercase;letter-spacing:.06em;">Giao diện minh họa</div>
+    <div style="display:flex;margin-bottom:6px;">
+      <div style="width:26px;height:26px;border-radius:50%;background:linear-gradient(135deg,#5b52f0,#8b5cf6);display:flex;align-items:center;justify-content:center;font-size:.7rem;border:2px solid var(--ink2);margin-right:-8px;">👩</div>
+      <div style="width:26px;height:26px;border-radius:50%;background:linear-gradient(135deg,#ec4899,#f97316);display:flex;align-items:center;justify-content:center;font-size:.7rem;border:2px solid var(--ink2);margin-right:-8px;">🧑</div>
+      <div style="width:26px;height:26px;border-radius:50%;background:linear-gradient(135deg,#10b981,#22d3ee);display:flex;align-items:center;justify-content:center;font-size:.7rem;border:2px solid var(--ink2);">👨</div>
+    </div>
+    <div style="font-size:.75rem;color:#86efac;font-weight:600;">CINAI Studio</div>
+  </div>
+
+  <div style="position:relative;z-index:5;max-width:1000px;">
+    <div class="eyebrow reveal"><span class="eyebrow-dot"></span>Xưởng phim AI dành cho nhà sáng tạo &nbsp;·&nbsp; Bản thử nghiệm</div>
+    <h1 class="display reveal reveal-delay-1" style="margin-bottom:32px;">
+      <span style="display:block;color:#f0f0ff;">Xây Dựng</span>
+      <span class="gt-main" style="display:block;">AI Đồng Sáng Tạo</span>
+      <span style="display:block;color:#f0f0ff;margin-top:4px;">Phim <span class="text-shine">Đa Phương Tiện</span></span>
+    </h1>
+    <p class="reveal reveal-delay-2" style="font-size:1.2rem;color:var(--muted);line-height:1.75;max-width:620px;margin:0 auto 52px;">
+      Không gian hỗ trợ nhà sáng tạo phát triển ý tưởng, viết kịch bản, tạo tư liệu và dựng video thử nghiệm đến 720p.
+    </p>
+    <div class="reveal reveal-delay-3" style="display:flex;gap:16px;justify-content:center;flex-wrap:wrap;margin-bottom:72px;">
+      <a href="/#studio" class="btn btn-hero"><span style="position:relative;z-index:1;">🎬 Bắt đầu sáng tạo</span></a>
+      <a href="#showcase" class="btn btn-ghost" style="display:flex;align-items:center;gap:10px;">
+        <span style="width:34px;height:34px;border-radius:50%;background:rgba(255,255,255,.08);display:flex;align-items:center;justify-content:center;font-size:.8rem;">▶</span>
+        Xem showcase
+      </a>
+    </div>
+    <div class="reveal reveal-delay-4" style="display:flex;justify-content:center;gap:64px;flex-wrap:wrap;">
+      <div style="text-align:center;"><div class="stat-val gt-main">AI</div><div class="stat-label">Gemini / Grok tùy cấu hình</div></div>
+      <div style="width:1px;background:var(--border);"></div>
+      <div style="text-align:center;"><div class="stat-val gt-cool">720p</div><div class="stat-label">Video đầu ra</div></div>
+      <div style="width:1px;background:var(--border);"></div>
+      <div style="text-align:center;"><div class="stat-val gt-gold">AI</div><div class="stat-label">Tạo ảnh và giọng đọc</div></div>
+      <div style="width:1px;background:var(--border);"></div>
+      <div style="text-align:center;"><div class="stat-val" style="background:linear-gradient(135deg,#fb7185,#f97316);-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text;">CSV</div><div class="stat-label">Nhập số liệu analytics</div></div>
+    </div>
+  </div>
+
+  <div class="filmstrip" style="bottom:0;">
+    <div class="filmstrip-hole"></div><div class="filmstrip-frame"></div><div class="filmstrip-hole"></div><div class="filmstrip-frame"></div><div class="filmstrip-hole"></div><div class="filmstrip-frame"></div><div class="filmstrip-hole"></div><div class="filmstrip-frame"></div><div class="filmstrip-hole"></div><div class="filmstrip-frame"></div><div class="filmstrip-hole"></div><div class="filmstrip-frame"></div><div class="filmstrip-hole"></div><div class="filmstrip-frame"></div><div class="filmstrip-hole"></div><div class="filmstrip-frame"></div><div class="filmstrip-hole"></div><div class="filmstrip-frame"></div><div class="filmstrip-hole"></div><div class="filmstrip-frame"></div><div class="filmstrip-hole"></div><div class="filmstrip-frame"></div><div class="filmstrip-hole"></div><div class="filmstrip-frame"></div><div class="filmstrip-hole"></div><div class="filmstrip-frame"></div><div class="filmstrip-hole"></div><div class="filmstrip-frame"></div><div class="filmstrip-hole"></div><div class="filmstrip-frame"></div>
+  </div>
+</section>
+
+<!-- FEATURES -->
+<section class="section" id="features">
+  <div class="container">
+    <div style="text-align:center;margin-bottom:72px;" class="reveal">
+      <div class="s-label">Tính năng nổi bật</div>
+      <h2 class="display-sm">Sức mạnh AI trong từng<br/><span class="gt-main">khung hình sáng tạo</span></h2>
+      <p style="color:var(--muted);margin-top:20px;font-size:1.05rem;line-height:1.75;max-width:520px;margin-left:auto;margin-right:auto;">Toàn bộ quy trình sản xuất phim trong một nền tảng — được AI hỗ trợ từ đầu đến cuối.</p>
+    </div>
+    <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:16px;">
+
+      <div class="feat-card reveal" style="grid-column:span 2;">
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:24px;align-items:center;">
+          <div>
+            <div class="feat-icon" style="background:linear-gradient(135deg,#5b52f0,#818cf8);box-shadow:0 8px 32px rgba(91,82,240,.4);">✍️</div>
+            <h3 class="feat-title">AI Kịch Bản Thông Minh</h3>
+            <p class="feat-desc">Phát triển ý tưởng thành concept, Story Bible, kịch bản và phân cảnh; bạn có thể xem, chỉnh sửa và tạo lại nội dung.</p>
+            <div style="margin-top:16px;"><span class="chip chip-v">Gemini</span><span class="chip chip-b">Grok tùy chọn</span><span class="chip chip-g">Tiếng Việt</span></div>
+          </div>
+          <div class="terminal">
+            <div class="terminal-bar">
+              <div class="tb-dot" style="background:#ff5f57;"></div>
+              <div class="tb-dot" style="background:#ffbd2e;"></div>
+              <div class="tb-dot" style="background:#28c840;"></div>
+              <span style="margin-left:8px;font-size:.72rem;color:var(--muted);">script.fountain</span>
+            </div>
+            <div class="terminal-body" style="font-family:'Courier New',monospace;font-size:.75rem;line-height:1.8;">
+              <div style="color:#818cf8;margin-bottom:4px;">INT. RỪNG ĐÊM HUYỀN BÍ — ĐÊM</div>
+              <div style="color:var(--muted);">Ánh trăng mờ xuyên qua tán lá...</div>
+              <div style="color:#a78bfa;margin-top:8px;">MINH</div>
+              <div style="color:#e0e0f8;padding-left:16px;">"Tôi biết bí mật của anh."</div>
+              <div style="color:#22d3ee;margin-top:8px;display:flex;align-items:center;gap:6px;"><span style="width:5px;height:5px;border-radius:50%;background:#22d3ee;animation:pulse-dot 1s infinite;"></span>AI đang tạo tiếp...</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="feat-card reveal reveal-delay-1">
+        <div class="feat-icon" style="background:linear-gradient(135deg,#8b5cf6,#ec4899);box-shadow:0 8px 32px rgba(139,92,246,.4);">🎨</div>
+        <h3 class="feat-title">Storyboard AI</h3>
+        <p class="feat-desc">Tạo ảnh cho phân cảnh bằng provider đã cấu hình; xem trạng thái, duyệt hoặc thử tạo lại tư liệu.</p>
+        <div style="margin-top:16px;"><span class="chip chip-v">Cần cấu hình provider</span></div>
+      </div>
+
+      <div class="feat-card reveal">
+        <div class="feat-icon" style="background:linear-gradient(135deg,#06b6d4,#5b52f0);box-shadow:0 8px 32px rgba(6,182,212,.4);">🎵</div>
+        <h3 class="feat-title">Giọng đọc AI</h3>
+        <p class="feat-desc">Tạo giọng đọc tiếng Việt cho lời thoại từng phân cảnh bằng Edge TTS khi dịch vụ khả dụng.</p>
+        <div style="margin-top:16px;"><span class="chip chip-b">Edge TTS</span><span class="chip chip-g">Theo phân cảnh</span></div>
+      </div>
+
+      <div class="feat-card reveal reveal-delay-1">
+        <div class="feat-icon" style="background:linear-gradient(135deg,#f97316,#fb7185);box-shadow:0 8px 32px rgba(249,115,22,.4);">🎞</div>
+        <h3 class="feat-title">Dựng video 720p</h3>
+        <p class="feat-desc">Ghép ảnh và âm thanh đã duyệt thành video bằng FFmpeg; xem trước, tải MP4 và phụ đề SRT.</p>
+        <div style="margin-top:16px;"><span class="chip chip-o">FFmpeg</span><span class="chip chip-r">MP4 + SRT</span></div>
+      </div>
+
+      <div class="feat-card reveal" style="grid-column:span 2;">
+        <div style="display:grid;grid-template-columns:1fr auto;gap:24px;align-items:center;">
+          <div>
+            <div class="feat-icon" style="background:linear-gradient(135deg,#10b981,#22d3ee);box-shadow:0 8px 32px rgba(16,185,129,.4);">📊</div>
+            <h3 class="feat-title">Analytics &amp; gợi ý nội dung</h3>
+            <p class="feat-desc">Nhập số liệu thủ công hoặc CSV, kết nối tài khoản nền tảng nếu đã cấu hình OAuth, rồi yêu cầu AI đề xuất tập tiếp theo.</p>
+            <div style="margin-top:16px;"><span class="chip chip-g">CSV</span><span class="chip chip-b">OAuth tùy cấu hình</span><span class="chip chip-v">Gợi ý AI</span></div>
+          </div>
+          <div style="background:rgba(255,255,255,.03);border-radius:14px;padding:20px;border:1px solid var(--border);min-width:200px;">
+            <div style="font-size:.72rem;color:var(--muted);font-weight:700;margin-bottom:14px;text-transform:uppercase;letter-spacing:.06em;">Views hôm nay</div>
+            <div style="display:flex;align-items:flex-end;gap:8px;height:60px;margin-bottom:10px;">
+              <div style="flex:1;border-radius:4px;background:rgba(91,82,240,.3);height:40%;"></div>
+              <div style="flex:1;border-radius:4px;background:rgba(91,82,240,.4);height:60%;"></div>
+              <div style="flex:1;border-radius:4px;background:rgba(91,82,240,.5);height:50%;"></div>
+              <div style="flex:1;border-radius:4px;background:rgba(91,82,240,.6);height:75%;"></div>
+              <div style="flex:1;border-radius:4px;background:rgba(139,92,246,.7);height:65%;"></div>
+              <div style="flex:1;border-radius:4px;background:linear-gradient(to top,#5b52f0,#a78bfa);height:100%;box-shadow:0 0 12px rgba(91,82,240,.5);"></div>
+            </div>
+            <div class="gt-main" style="font-size:1.5rem;font-weight:900;letter-spacing:-0.03em;">+245K</div>
+            <div style="font-size:.72rem;color:#22c55e;margin-top:2px;">↑ 38% so với hôm qua</div>
+          </div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+</section>
+
+<div class="divider" style="position:relative;z-index:2;margin:0 32px;"></div>
+
+<!-- WORKFLOW -->
+<section class="section" id="workflow">
+  <div class="container-sm">
+    <div style="text-align:center;margin-bottom:72px;" class="reveal">
+      <div class="s-label">Quy trình sản xuất</div>
+      <h2 class="display-sm">Từ ý tưởng đến<br/><span class="gt-gold">kiệt tác điện ảnh</span></h2>
+      <p style="color:var(--muted);margin-top:20px;font-size:1.05rem;line-height:1.75;max-width:480px;margin-left:auto;margin-right:auto;">5 bước đơn giản, AI lo phần còn lại. Bạn chỉ cần sáng tạo.</p>
+    </div>
+    <div style="display:flex;flex-direction:column;gap:0;">
+
+      <div class="step reveal">
+        <div class="step-line"></div>
+        <div class="step-num" style="background:linear-gradient(135deg,#5b52f0,#818cf8);box-shadow:0 8px 30px rgba(91,82,240,.4);">01</div>
+        <div class="step-body">
+          <h3 class="step-title">💡 Nhập Ý Tưởng Của Bạn</h3>
+          <p class="step-desc">Nhập mô tả ý tưởng bằng văn bản, chọn provider AI đã cấu hình và xem các concept được đề xuất.</p>
+          <div style="margin-top:12px;"><span class="chip chip-v">Ý tưởng văn bản</span><span class="chip chip-b">Gemini / Grok</span></div>
+        </div>
+      </div>
+
+      <div class="step reveal reveal-delay-1">
+        <div class="step-line"></div>
+        <div class="step-num" style="background:linear-gradient(135deg,#8b5cf6,#ec4899);box-shadow:0 8px 30px rgba(139,92,246,.4);">02</div>
+        <div class="step-body">
+          <h3 class="step-title">📝 AI Viết Kịch Bản Chuyên Nghiệp</h3>
+          <p class="step-desc">Tạo Story Bible và kịch bản theo dự án, sau đó xem, chỉnh sửa và lưu nội dung trước khi chuyển sang phân cảnh.</p>
+          <div style="margin-top:12px;"><span class="chip chip-v">Story Bible</span><span class="chip chip-b">Lưu phiên bản</span></div>
+        </div>
+      </div>
+
+      <div class="step reveal reveal-delay-2">
+        <div class="step-line"></div>
+        <div class="step-num" style="background:linear-gradient(135deg,#06b6d4,#5b52f0);box-shadow:0 8px 30px rgba(6,182,212,.35);">03</div>
+        <div class="step-body">
+          <h3 class="step-title">🎨 Tạo Visual &amp; Âm Thanh</h3>
+          <p class="step-desc">Tạo ảnh và giọng đọc cho từng cảnh bằng dịch vụ đã cấu hình; xem trạng thái, duyệt và thử lại khi cần.</p>
+          <div style="margin-top:12px;"><span class="chip chip-g">Ảnh theo prompt</span><span class="chip chip-o">Edge TTS</span></div>
+        </div>
+      </div>
+
+      <div class="step reveal reveal-delay-3">
+        <div class="step-line"></div>
+        <div class="step-num" style="background:linear-gradient(135deg,#f97316,#fb7185);box-shadow:0 8px 30px rgba(249,115,22,.35);">04</div>
+        <div class="step-body">
+          <h3 class="step-title">⚙️ Dựng Phim Tự Động</h3>
+          <p class="step-desc">Dựng video từ ảnh và âm thanh đã duyệt bằng FFmpeg, sau đó xem trước hoặc tải video MP4 và phụ đề SRT.</p>
+          <div style="margin-top:12px;"><span class="chip chip-r">720p</span><span class="chip chip-b">FFmpeg</span><span class="chip chip-g">SRT</span></div>
+        </div>
+      </div>
+
+      <div class="step reveal reveal-delay-4">
+        <div class="step-num" style="background:linear-gradient(135deg,#10b981,#22d3ee);box-shadow:0 8px 30px rgba(16,185,129,.35);">05</div>
+        <div class="step-body">
+          <h3 class="step-title">📊 Theo dõi Analytics</h3>
+          <p class="step-desc">Nhập số liệu hiệu quả theo biểu mẫu hoặc CSV, đồng bộ nền tảng đã kết nối và nhận gợi ý AI dựa trên dữ liệu.</p>
+          <div style="margin-top:12px;"><span class="chip chip-o">CSV</span><span class="chip chip-v">Đồng bộ tùy quyền</span><span class="chip chip-g">Gợi ý AI</span></div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+</section>
+
+<!-- SHOWCASE -->
+<section class="section" id="showcase" style="padding-top:80px;">
+  <div class="container">
+    <div style="text-align:center;margin-bottom:56px;" class="reveal">
+      <div class="s-label">Showcase</div>
+      <h2 class="display-sm">Những thước phim<br/><span class="gt-cool">được tạo bởi AI</span></h2>
+    </div>
+    <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:14px;" class="reveal">
+
+      <div style="border-radius:18px;overflow:hidden;position:relative;cursor:pointer;transition:transform .4s,box-shadow .4s;" onmouseover="this.style.transform='scale(1.04)';this.style.boxShadow='0 24px 64px rgba(91,82,240,.4)'" onmouseout="this.style.transform='scale(1)';this.style.boxShadow='none'">
+        <div style="aspect-ratio:9/16;background:linear-gradient(160deg,#0f0c29,#302b63,#24243e);display:flex;flex-direction:column;justify-content:flex-end;padding:20px;position:relative;">
+          <div style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-size:5rem;opacity:.35;">🚀</div>
+          <div style="position:absolute;top:14px;left:14px;padding:4px 12px;border-radius:999px;background:rgba(91,82,240,.6);backdrop-filter:blur(8px);font-size:.68rem;font-weight:700;letter-spacing:.06em;color:#c4b5fd;text-transform:uppercase;">Sci-Fi</div>
+          <div style="position:relative;"><div style="font-size:.88rem;font-weight:700;color:#fff;margin-bottom:4px;">Chinh Phục Thiên Hà</div><div style="font-size:.72rem;color:rgba(255,255,255,.5);">Giao diện minh họa</div></div>
+        </div>
+      </div>
+
+      <div style="border-radius:18px;overflow:hidden;position:relative;cursor:pointer;transition:transform .4s,box-shadow .4s;margin-top:28px;" onmouseover="this.style.transform='scale(1.04)';this.style.boxShadow='0 24px 64px rgba(236,72,153,.35)'" onmouseout="this.style.transform='scale(1)';this.style.boxShadow='none'">
+        <div style="aspect-ratio:9/16;background:linear-gradient(160deg,#1a0010,#4a0025,#8b1050);display:flex;flex-direction:column;justify-content:flex-end;padding:20px;position:relative;">
+          <div style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-size:5rem;opacity:.35;">🌺</div>
+          <div style="position:absolute;top:14px;left:14px;padding:4px 12px;border-radius:999px;background:rgba(236,72,153,.5);backdrop-filter:blur(8px);font-size:.68rem;font-weight:700;letter-spacing:.06em;color:#fce7f3;text-transform:uppercase;">Drama</div>
+          <div style="position:relative;"><div style="font-size:.88rem;font-weight:700;color:#fff;margin-bottom:4px;">Mùa Hạ Cuối Cùng</div><div style="font-size:.72rem;color:rgba(255,255,255,.5);">Giao diện minh họa</div></div>
+        </div>
+      </div>
+
+      <div style="border-radius:18px;overflow:hidden;position:relative;cursor:pointer;transition:transform .4s,box-shadow .4s;" onmouseover="this.style.transform='scale(1.04)';this.style.boxShadow='0 24px 64px rgba(16,185,129,.35)'" onmouseout="this.style.transform='scale(1)';this.style.boxShadow='none'">
+        <div style="aspect-ratio:9/16;background:linear-gradient(160deg,#001a0a,#004020,#006030);display:flex;flex-direction:column;justify-content:flex-end;padding:20px;position:relative;">
+          <div style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-size:5rem;opacity:.35;">🌿</div>
+          <div style="position:absolute;top:14px;left:14px;padding:4px 12px;border-radius:999px;background:rgba(16,185,129,.5);backdrop-filter:blur(8px);font-size:.68rem;font-weight:700;letter-spacing:.06em;color:#d1fae5;text-transform:uppercase;">Adventure</div>
+          <div style="position:relative;"><div style="font-size:.88rem;font-weight:700;color:#fff;margin-bottom:4px;">Rừng Huyền Bí</div><div style="font-size:.72rem;color:rgba(255,255,255,.5);">Giao diện minh họa</div></div>
+        </div>
+      </div>
+
+      <div style="border-radius:18px;overflow:hidden;position:relative;cursor:pointer;transition:transform .4s,box-shadow .4s;margin-top:28px;" onmouseover="this.style.transform='scale(1.04)';this.style.boxShadow='0 24px 64px rgba(34,211,238,.3)'" onmouseout="this.style.transform='scale(1)';this.style.boxShadow='none'">
+        <div style="aspect-ratio:9/16;background:linear-gradient(160deg,#000d1a,#001a40,#002060);display:flex;flex-direction:column;justify-content:flex-end;padding:20px;position:relative;">
+          <div style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-size:5rem;opacity:.35;">🌊</div>
+          <div style="position:absolute;top:14px;left:14px;padding:4px 12px;border-radius:999px;background:rgba(34,211,238,.4);backdrop-filter:blur(8px);font-size:.68rem;font-weight:700;letter-spacing:.06em;color:#cffafe;text-transform:uppercase;">Animation</div>
+          <div style="position:relative;"><div style="font-size:.88rem;font-weight:700;color:#fff;margin-bottom:4px;">Đại Dương Xanh</div><div style="font-size:.72rem;color:rgba(255,255,255,.5);">Giao diện minh họa</div></div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+</section>
+
+<!-- TESTIMONIALS -->
+<section class="section" style="padding:80px 0;">
+  <div class="container-sm" style="text-align:center;">
+    <div class="s-label">Trải nghiệm minh họa</div>
+    <h2 class="display-sm">Khám phá luồng làm việc<br/><span class="gt-main">trong CINAI Studio</span></h2>
+    <p style="color:var(--muted);margin:18px auto 0;max-width:620px;line-height:1.75;">CINAI chưa có dữ liệu đánh giá người dùng để xác minh. Nội dung showcase trên trang là hình minh họa giao diện.</p>
+  </div>
+</section>
+
+<!-- PRICING -->
+<section class="section" id="pricing" style="background:rgba(255,255,255,.01);">
+  <div class="container">
+    <div style="text-align:center;margin-bottom:72px;" class="reveal">
+      <div class="s-label">Bảng giá</div>
+      <h2 class="display-sm">Các gói sử dụng<br/><span class="gt-gold">CINAI Studio</span></h2>
+      <p style="color:var(--muted);margin-top:20px;font-size:1.05rem;line-height:1.75;">Bảng giá đang được hoàn thiện. Gói thử nghiệm hiện chưa thu phí; các gói trả phí chưa mở đăng ký.</p>
+    </div>
+    <div class="pricing-grid">
+      <article class="price-card reveal">
+        <div class="price-badge" style="position:static;align-self:flex-start;">Bản thử nghiệm</div>
+        <h3 style="font-size:1.25rem;margin-bottom:8px;">Beta</h3>
+        <div class="price-val gt-main" style="font-size:2rem;">Miễn phí</div>
+        <p class="price-period">Trong giai đoạn thử nghiệm</p>
+        <div class="price-divider"></div>
+        <div class="price-features">
+          <div class="price-feature"><span class="pf-check on">✓</span>Tạo dự án, phát triển kịch bản và phân cảnh</div>
+          <div class="price-feature"><span class="pf-check on">✓</span>AI và media khi nhà cung cấp được cấu hình</div>
+          <div class="price-feature"><span class="pf-check on">✓</span>Dựng video thử nghiệm đến 720p</div>
+        </div>
+        <a href="/#studio" class="btn btn-hero" style="margin-top:22px;padding:13px 24px;">Dùng bản Beta</a>
+      </article>
+      <article class="price-card best reveal reveal-delay-1">
+        <div class="price-badge" style="position:static;align-self:flex-start;">Dự kiến</div>
+        <h3 style="font-size:1.25rem;margin-bottom:8px;">Creator</h3>
+        <div class="price-val gt-main" style="font-size:2rem;">Sắp ra mắt</div>
+        <p class="price-period">Giá và quyền lợi sẽ được công bố</p>
+        <div class="price-divider"></div>
+        <div class="price-features">
+          <div class="price-feature"><span class="pf-check off">·</span>Gói trả phí chưa mở đăng ký</div>
+          <div class="price-feature"><span class="pf-check off">·</span>Giới hạn sử dụng chưa được công bố</div>
+          <div class="price-feature"><span class="pf-check off">·</span>Thanh toán chưa được tích hợp</div>
+        </div>
+        <p class="pricing-note">Thông tin gói sẽ cập nhật khi các tính năng và mức phí được xác định.</p>
+      </article>
+      <article class="price-card reveal reveal-delay-2">
+        <div class="price-badge" style="position:static;align-self:flex-start;">Dự kiến</div>
+        <h3 style="font-size:1.25rem;margin-bottom:8px;">Studio</h3>
+        <div class="price-val gt-main" style="font-size:2rem;">Sắp ra mắt</div>
+        <p class="price-period">Giá và quyền lợi sẽ được công bố</p>
+        <div class="price-divider"></div>
+        <div class="price-features">
+          <div class="price-feature"><span class="pf-check off">·</span>Gói trả phí chưa mở đăng ký</div>
+          <div class="price-feature"><span class="pf-check off">·</span>Quyền lợi dành cho nhóm chưa công bố</div>
+          <div class="price-feature"><span class="pf-check off">·</span>Thanh toán chưa được tích hợp</div>
+        </div>
+        <p class="pricing-note">Thông tin gói sẽ cập nhật khi các tính năng và mức phí được xác định.</p>
+      </article>
+    </div>
+  </div>
+</section>
+
+<!-- FAQ -->
+<section class="section" id="faq" style="padding-top:80px;">
+  <div class="container-sm">
+    <div style="text-align:center;margin-bottom:56px;" class="reveal">
+      <div class="s-label">FAQ</div>
+      <h2 class="display-sm" style="font-size:clamp(1.8rem,4vw,3rem);">Câu hỏi thường gặp</h2>
+    </div>
+    <div style="display:flex;flex-direction:column;gap:10px;">
+      <details class="faq reveal"><summary>CINAI có hỗ trợ tiếng Việt không? <span class="faq-plus">+</span></summary><div class="faq-body">Giao diện và luồng viết nội dung hướng tới tiếng Việt. Chất lượng nội dung AI phụ thuộc provider/model bạn cấu hình; giọng đọc dùng Edge TTS khi dịch vụ hoạt động.</div></details>
+      <details class="faq reveal reveal-delay-1"><summary>Tôi có thể sử dụng thương mại nội dung tạo ra không? <span class="faq-plus">+</span></summary><div class="faq-body">Hãy kiểm tra điều khoản của từng nhà cung cấp AI và quyền đối với dữ liệu đầu vào. Chỉ sử dụng nội dung bạn tự tạo hoặc có quyền sử dụng; CINAI không cam kết quyền thương mại thay cho nhà cung cấp.</div></details>
+      <details class="faq reveal reveal-delay-2"><summary>Cần cấu hình gì để dùng AI và tạo media? <span class="faq-plus">+</span></summary><div class="faq-body">Cần cấu hình khóa của provider tương ứng trong backend. Tạo ảnh cần Stability, giọng đọc cần Edge TTS và dựng video cần FFmpeg cùng ảnh/âm thanh đã duyệt.</div></details>
+      <details class="faq reveal reveal-delay-3"><summary>CINAI có gói trả phí hoặc giới hạn sử dụng không? <span class="faq-plus">+</span></summary><div class="faq-body">Chưa. Website hiện chưa triển khai thanh toán, gói thuê bao hoặc giới hạn theo gói.</div></details>
+      <details class="faq reveal reveal-delay-4"><summary>CINAI có đăng video tự động lên mạng xã hội không? <span class="faq-plus">+</span></summary><div class="faq-body">Chưa. Studio hỗ trợ kết nối và đồng bộ một số số liệu analytics khi provider cấp quyền; chưa có luồng xuất bản video tự động.</div></details>
+    </div>
+  </div>
+</section>
+
+<!-- CTA -->
+<section class="cta-section">
+  <div class="cta-bg"></div>
+  <div style="position:relative;z-index:2;max-width:760px;margin:0 auto;" class="reveal">
+    <div style="font-size:4rem;margin-bottom:28px;display:inline-block;animation:float-card 5s ease-in-out infinite;--r:0deg;">🎬</div>
+    <h2 class="display" style="margin-bottom:24px;">Sẵn sàng tạo<br/><span class="gt-main">kiệt tác của bạn?</span></h2>
+    <p style="color:var(--muted);font-size:1.15rem;line-height:1.75;margin-bottom:52px;max-width:520px;margin-left:auto;margin-right:auto;">Thử quy trình từ ý tưởng đến video và góp ý để CINAI tiếp tục hoàn thiện.</p>
+    <div style="display:flex;flex-direction:column;align-items:center;gap:16px;">
+      <a href="/#studio" class="btn btn-hero" style="padding:20px 56px;border-radius:16px;font-size:1.1rem;"><span style="position:relative;z-index:1;">Bắt đầu miễn phí — Ngay hôm nay</span></a>
+      <p style="font-size:.82rem;color:var(--muted);">Tạo tài khoản để lưu dự án · Cần cấu hình dịch vụ tương ứng để dùng AI/media</p>
+    </div>
+  </div>
+</section>
+
+<!-- FOOTER -->
+<footer style="position:relative;z-index:2;padding:64px 32px 40px;border-top:1px solid var(--border);">
+  <div class="container">
+    <div style="display:grid;grid-template-columns:2.5fr 1fr 1fr 1fr;gap:48px;margin-bottom:56px;">
+      <div>
+        <div style="display:flex;align-items:center;gap:10px;margin-bottom:20px;">
+          <div class="logo-mark" style="width:36px;height:36px;border-radius:10px;">🎬</div>
+          <span class="logo-name" style="font-size:1.25rem;">CINAI</span>
+        </div>
+        <p style="color:var(--muted);font-size:.875rem;line-height:1.8;max-width:300px;">Nền tảng AI đồng sáng tạo và sản xuất nội dung phim đa phương tiện hàng đầu Việt Nam.</p>
+          <p style="color:var(--muted);font-size:.82rem;margin-top:16px;">Kênh mạng xã hội chưa được thiết lập.</p>
+      </div>
+      <div>
+        <div style="font-size:.8rem;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:#e0e0f8;margin-bottom:20px;">Sản phẩm</div>
+        <div style="display:flex;flex-direction:column;gap:13px;">
+          <a href="#workflow" style="text-decoration:none;color:var(--muted);font-size:.875rem;">Viết kịch bản</a>
+          <a href="#features" style="text-decoration:none;color:var(--muted);font-size:.875rem;">Tạo ảnh và giọng đọc</a>
+          <a href="#features" style="text-decoration:none;color:var(--muted);font-size:.875rem;">Dựng video 720p</a>
+          <a href="#features" style="text-decoration:none;color:var(--muted);font-size:.875rem;">Analytics và gợi ý AI</a>
+        </div>
+      </div>
+      <div>
+        <div style="font-size:.8rem;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:#e0e0f8;margin-bottom:20px;">Tài nguyên</div>
+        <div style="display:flex;flex-direction:column;gap:13px;">
+          <a href="#faq" style="text-decoration:none;color:var(--muted);font-size:.875rem;">Câu hỏi thường gặp</a>
+          <a href="/docs" style="text-decoration:none;color:var(--muted);font-size:.875rem;">Tài liệu API</a>
+          <a href="/#studio" style="text-decoration:none;color:var(--muted);font-size:.875rem;">Mở CINAI Studio</a>
+        </div>
+      </div>
+      <div>
+        <div style="font-size:.8rem;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:#e0e0f8;margin-bottom:20px;">Công ty</div>
+        <div style="display:flex;flex-direction:column;gap:13px;">
+          <a href="#hero" style="text-decoration:none;color:var(--muted);font-size:.875rem;">Về CINAI</a>
+          <span style="color:var(--muted);font-size:.875rem;">Tuyển dụng chưa được công bố</span>
+          <span style="color:var(--muted);font-size:.875rem;">Thông tin liên hệ chưa được công bố</span>
+        </div>
+      </div>
+    </div>
+    <div class="divider" style="margin-bottom:28px;"></div>
+    <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:12px;">
+      <div style="color:var(--muted);font-size:.8rem;">© 2026 CINAI Platform. All rights reserved. Made with ❤️ in Việt Nam.</div>
+      <div style="color:var(--muted);font-size:.8rem;display:flex;gap:20px;">
+        <span>Chính sách quyền riêng tư, điều khoản và cookie chưa được công bố.</span>
+      </div>
+    </div>
+  </div>
+</footer>
+
+<script>
+(function(){
+  const canvas=document.getElementById('aurora-canvas'),ctx=canvas.getContext('2d');
+  let W,H,t=0;
+  function resize(){W=canvas.width=window.innerWidth;H=canvas.height=window.innerHeight;}
+  resize();window.addEventListener('resize',resize);
+  const blobs=[
+    {x:.25,y:.3,r:.45,vx:.0003,vy:.0002,color:[91,82,240],a:.13},
+    {x:.75,y:.6,r:.4,vx:-.0002,vy:.0003,color:[139,92,246],a:.10},
+    {x:.5,y:.15,r:.35,vx:.0002,vy:-.0002,color:[251,113,133],a:.07},
+    {x:.15,y:.75,r:.3,vx:.0003,vy:.0001,color:[34,211,238],a:.06},
+    {x:.85,y:.2,r:.3,vx:-.0003,vy:.0002,color:[201,168,76],a:.05},
+  ];
+  function draw(){
+    ctx.clearRect(0,0,W,H);t++;
+    blobs.forEach(b=>{
+      b.x+=Math.sin(t*b.vx*100)*0.0004;b.y+=Math.cos(t*b.vy*100)*0.0003;
+      const grd=ctx.createRadialGradient(b.x*W,b.y*H,0,b.x*W,b.y*H,b.r*Math.min(W,H));
+      const[r,g,bv]=b.color;
+      grd.addColorStop(0,`rgba(${r},${g},${bv},${b.a})`);
+      grd.addColorStop(.5,`rgba(${r},${g},${bv},${b.a*.4})`);
+      grd.addColorStop(1,`rgba(${r},${g},${bv},0)`);
+      ctx.beginPath();ctx.ellipse(b.x*W,b.y*H,b.r*Math.min(W,H)*1.2,b.r*Math.min(W,H)*.8,t*.002,0,Math.PI*2);
+      ctx.fillStyle=grd;ctx.fill();
+    });
+    requestAnimationFrame(draw);
+  }
+  draw();
+})();
+
+const io=new IntersectionObserver(e=>{e.forEach(el=>{if(el.isIntersecting)el.target.classList.add('up');});},{threshold:.1});
+document.querySelectorAll('.reveal').forEach(el=>io.observe(el));
+
+const nav=document.getElementById('nav');
+window.addEventListener('scroll',()=>nav.classList.toggle('scrolled',window.scrollY>40));
+
+document.querySelectorAll('.feat-card').forEach(card=>{
+  card.addEventListener('mousemove',e=>{
+    const rect=card.getBoundingClientRect();
+    card.style.setProperty('--mx',((e.clientX-rect.left)/rect.width*100).toFixed(1)+'%');
+    card.style.setProperty('--my',((e.clientY-rect.top)/rect.height*100).toFixed(1)+'%');
+  });
+});
+
+document.querySelectorAll('a[href^="#"]').forEach(a=>{
+  a.addEventListener('click',e=>{const t=document.querySelector(a.getAttribute('href'));if(t){e.preventDefault();t.scrollIntoView({behavior:'smooth'});}});
+});
+
+document.querySelectorAll('.faq').forEach(f=>{
+  f.addEventListener('toggle',()=>{f.querySelector('.faq-plus').textContent=f.open?'−':'+';});
+});
+</script>
+</div>
+<iframe id="cinai-studio-frame" title="CINAI Studio"></iframe>
+<script>
+updateStudioRoute();
+</script>
+</body>
+</html>

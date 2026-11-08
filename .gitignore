@@ -1,0 +1,23 @@
+# Local configuration and credentials
+**/.env
+!**/.env.example
+
+# Python environments and generated files
+**/.venv/
+**/venv/
+**/__pycache__/
+*.py[cod]
+
+# Local database and generated media
+backend/*.db
+backend/storage/
+.env
+**/.env
+.venv/
+venv/
+node_modules/
+__pycache__/
+storage/
+*.db
+*.sqlite
+*.sqlite3
